@@ -277,8 +277,43 @@ impl App {
                 self.move_player_single(dx, dy);
             }
             GameMode::MultiPlayer => {
-                if let Some(ref client) = self.network_client {
-                    client.send_move(dx, dy);
+                // Optimistic update: update local position immediately
+                let new_x = self.player.x + dx;
+                let new_y = self.player.y + dy;
+                
+                // Check if the move is valid locally first
+                if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
+                    match tile {
+                        Tile::Floor | Tile::Grass | Tile::Road | Tile::Tree | Tile::Village | Tile::DungeonEntrance => {
+                            // Update local position immediately for responsive feel
+                            self.player.x = new_x;
+                            self.player.y = new_y;
+                            self.turn_count += 1;
+                            
+                            // Send move to server
+                            if let Some(ref client) = self.network_client {
+                                client.send_move(dx, dy);
+                            }
+                        }
+                        Tile::Wall | Tile::Mountain => {
+                            self.messages.push(format!("You can't move through {}.", 
+                                match tile {
+                                    Tile::Wall => "a wall",
+                                    Tile::Mountain => "a mountain",
+                                    _ => "that",
+                                }
+                            ));
+                        }
+                        Tile::Water => {
+                            self.messages.push("You can't swim across the water.".to_string());
+                        }
+                        Tile::Empty => {}
+                    }
+                } else {
+                    // Send move anyway in case server has different map state
+                    if let Some(ref client) = self.network_client {
+                        client.send_move(dx, dy);
+                    }
                 }
             }
         }
