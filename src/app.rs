@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::terrain::TerrainGenerator;
 
 pub struct App {
     pub current_screen: CurrentScreen,
@@ -7,6 +8,7 @@ pub struct App {
     pub game_map: GameMap,
     pub messages: Vec<String>,
     pub turn_count: u32,
+    pub current_map_type: MapType,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +16,12 @@ pub enum CurrentScreen {
     Game,
     Inventory,
     Exiting,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapType {
+    Overworld,
+    Dungeon,
 }
 
 #[derive(Debug, Clone)]
@@ -37,41 +45,34 @@ pub enum Tile {
     Floor,
     Wall,
     Empty,
+    // Overworld tiles
+    Grass,
+    Tree,
+    Mountain,
+    Water,
+    Road,
+    Village,
+    DungeonEntrance,
 }
 
 impl App {
     pub fn new() -> App {
-        let mut game_map = GameMap {
-            width: 40,
-            height: 20,
-            tiles: HashMap::new(),
-        };
-        
-        // Initialize a simple map with walls around the border
-        for x in 0..game_map.width {
-            for y in 0..game_map.height {
-                let tile = if x == 0 || x == game_map.width - 1 || y == 0 || y == game_map.height - 1 {
-                    Tile::Wall
-                } else {
-                    Tile::Floor
-                };
-                game_map.tiles.insert((x, y), tile);
-            }
-        }
+        let game_map = TerrainGenerator::generate_overworld(60, 30);
         
         App {
             current_screen: CurrentScreen::Game,
             should_quit: false,
             player: Player {
-                x: 5,
-                y: 5,
+                x: 30,
+                y: 15,
                 hp: 20,
                 max_hp: 20,
                 symbol: '@',
             },
             game_map,
-            messages: vec!["Welcome to the dungeon!".to_string()],
+            messages: vec!["Welcome to the overworld! Look for dungeons (D) to explore.".to_string()],
             turn_count: 0,
+            current_map_type: MapType::Overworld,
         }
     }
     
@@ -82,13 +83,35 @@ impl App {
         // Check if the new position is valid
         if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
             match tile {
-                Tile::Floor => {
+                Tile::Floor | Tile::Grass | Tile::Road => {
                     self.player.x = new_x;
                     self.player.y = new_y;
                     self.turn_count += 1;
                 }
-                Tile::Wall => {
-                    self.messages.push("You bump into a wall.".to_string());
+                Tile::Wall | Tile::Tree | Tile::Mountain => {
+                    self.messages.push(format!("You can't move through {}.", 
+                        match tile {
+                            Tile::Wall => "a wall",
+                            Tile::Tree => "a tree",
+                            Tile::Mountain => "a mountain",
+                            _ => "that",
+                        }
+                    ));
+                }
+                Tile::Water => {
+                    self.messages.push("You can't swim across the water.".to_string());
+                }
+                Tile::Village => {
+                    self.player.x = new_x;
+                    self.player.y = new_y;
+                    self.turn_count += 1;
+                    self.messages.push("You visit the village. The locals greet you warmly.".to_string());
+                }
+                Tile::DungeonEntrance => {
+                    self.player.x = new_x;
+                    self.player.y = new_y;
+                    self.turn_count += 1;
+                    self.messages.push("You stand before a dark dungeon entrance. Press 'e' to enter.".to_string());
                 }
                 Tile::Empty => {}
             }
@@ -99,6 +122,28 @@ impl App {
             self.messages.remove(0);
         }
     }
+    
+    pub fn enter_dungeon(&mut self) {
+        if let Some(tile) = self.game_map.tiles.get(&(self.player.x, self.player.y)) {
+            if *tile == Tile::DungeonEntrance {
+                self.game_map = TerrainGenerator::generate_dungeon(40, 20);
+                self.player.x = 5;
+                self.player.y = 5;
+                self.current_map_type = MapType::Dungeon;
+                self.messages.push("You descend into the dungeon...".to_string());
+            }
+        }
+    }
+    
+    pub fn exit_dungeon(&mut self) {
+        if self.current_map_type == MapType::Dungeon {
+            self.game_map = TerrainGenerator::generate_overworld(60, 30);
+            self.player.x = 30;
+            self.player.y = 15;
+            self.current_map_type = MapType::Overworld;
+            self.messages.push("You emerge from the dungeon into the overworld.".to_string());
+        }
+    }
 }
 
 impl Tile {
@@ -107,6 +152,13 @@ impl Tile {
             Tile::Floor => '.',
             Tile::Wall => '#',
             Tile::Empty => ' ',
+            Tile::Grass => '"',
+            Tile::Tree => 'T',
+            Tile::Mountain => '^',
+            Tile::Water => '~',
+            Tile::Road => '+',
+            Tile::Village => 'V',
+            Tile::DungeonEntrance => 'D',
         }
     }
 }

@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, CurrentScreen, Tile};
+use crate::app::{App, CurrentScreen, MapType, Tile};
 
 pub fn ui(frame: &mut Frame, app: &App) {
     // Create the layout sections: Status bar, Game area, Message log
@@ -21,8 +21,14 @@ pub fn ui(frame: &mut Frame, app: &App) {
 
     // Status bar showing player stats and current screen
     let status_text = format!(
-        "HP: {}/{} | Turn: {} | Screen: {:?}",
-        app.player.hp, app.player.max_hp, app.turn_count, app.current_screen
+        "HP: {}/{} | Turn: {} | Map: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
+        app.player.hp, 
+        app.player.max_hp, 
+        app.turn_count, 
+        match app.current_map_type {
+            MapType::Overworld => "Overworld",
+            MapType::Dungeon => "Dungeon",
+        }
     );
     
     let status_block = Block::default()
@@ -61,33 +67,89 @@ pub fn ui(frame: &mut Frame, app: &App) {
 }
 
 fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
-    let mut map_text = String::new();
+    let mut lines = Vec::<Line>::new();
     
     for y in 0..app.game_map.height {
+        let mut spans = Vec::<Span>::new();
+        
         for x in 0..app.game_map.width {
             if x == app.player.x && y == app.player.y {
-                map_text.push(app.player.symbol);
+                // Player character with bright yellow foreground and dark background
+                spans.push(Span::styled(
+                    app.player.symbol.to_string(),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .bg(Color::DarkGray)
+                ));
             } else if let Some(tile) = app.game_map.tiles.get(&(x, y)) {
-                map_text.push(tile.to_char());
+                let (style, character) = get_tile_style_and_char(*tile);
+                spans.push(Span::styled(character.to_string(), style));
             } else {
-                map_text.push(' ');
+                spans.push(Span::styled(" ".to_string(), Style::default()));
             }
         }
-        map_text.push('\n');
+        lines.push(Line::from(spans));
     }
+
+    let title = match app.current_map_type {
+        MapType::Overworld => "🌍 Overworld",
+        MapType::Dungeon => "🏰 Dungeon",
+    };
 
     let game_block = Block::default()
         .borders(Borders::ALL)
-        .title("Dungeon")
+        .title(title)
         .style(Style::default());
 
-    let game_area = Paragraph::new(Text::styled(
-        map_text,
-        Style::default().fg(Color::White),
-    ))
-    .block(game_block);
+    let game_area = Paragraph::new(Text::from(lines))
+        .block(game_block);
 
     frame.render_widget(game_area, area);
+}
+
+fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
+    match tile {
+        Tile::Floor => (
+            Style::default().fg(Color::Gray),
+            '.'
+        ),
+        Tile::Wall => (
+            Style::default().fg(Color::White).bg(Color::DarkGray),
+            '#'
+        ),
+        Tile::Empty => (
+            Style::default(),
+            ' '
+        ),
+        Tile::Grass => (
+            Style::default().fg(Color::Green),
+            '"'
+        ),
+        Tile::Tree => (
+            Style::default().fg(Color::Green).bg(Color::Rgb(34, 139, 34)), // Forest green background
+            'T'
+        ),
+        Tile::Mountain => (
+            Style::default().fg(Color::White).bg(Color::Rgb(105, 105, 105)), // Dim gray background
+            '^'
+        ),
+        Tile::Water => (
+            Style::default().fg(Color::Cyan).bg(Color::Blue),
+            '~'
+        ),
+        Tile::Road => (
+            Style::default().fg(Color::Yellow).bg(Color::Rgb(139, 69, 19)), // Saddle brown background
+            '+'
+        ),
+        Tile::Village => (
+            Style::default().fg(Color::Magenta).bg(Color::Rgb(255, 215, 0)), // Gold background
+            'V'
+        ),
+        Tile::DungeonEntrance => (
+            Style::default().fg(Color::Red).bg(Color::Black),
+            'D'
+        ),
+    }
 }
 
 fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {

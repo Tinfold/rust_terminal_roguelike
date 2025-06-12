@@ -13,6 +13,7 @@ use ratatui::{
 
 mod app;
 mod ui;
+mod terrain;
 use crate::{
     app::{App, CurrentScreen},
     ui::ui,
@@ -73,6 +74,12 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
                         }
                         KeyCode::Char('i') => {
                             app.current_screen = CurrentScreen::Inventory;
+                        }
+                        KeyCode::Char('e') => {
+                            app.enter_dungeon();
+                        }
+                        KeyCode::Char('x') => {
+                            app.exit_dungeon();
                         }
                         // Movement keys (vi-style)
                         KeyCode::Char('h') | KeyCode::Left => {
