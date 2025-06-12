@@ -6,9 +6,89 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, CurrentScreen, MapType, Tile};
+use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
 
 pub fn ui(frame: &mut Frame, app: &App) {
+    match app.current_screen {
+        CurrentScreen::MainMenu => render_main_menu(frame, app),
+        _ => render_game_ui(frame, app),
+    }
+}
+
+fn render_main_menu(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Title
+            Constraint::Min(10),    // Menu
+            Constraint::Length(3),  // Status/Error
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new(Text::styled(
+        "🗡️  MULTIPLAYER ROGUELIKE  🛡️",
+        Style::default().fg(Color::Yellow),
+    ))
+    .block(Block::default().borders(Borders::ALL))
+    .wrap(Wrap { trim: false });
+
+    frame.render_widget(title, chunks[0]);
+
+    // Menu options
+    let menu_items = vec![
+        "Single Player",
+        "Multiplayer",
+        "Quit",
+    ];
+
+    let mut menu_list_items = Vec::<ListItem>::new();
+    for (i, item) in menu_items.iter().enumerate() {
+        let style = if i == app.main_menu_state.selected_option {
+            Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let prefix = if i == app.main_menu_state.selected_option { "▶ " } else { "  " };
+        menu_list_items.push(ListItem::new(Line::from(Span::styled(
+            format!("{}{}", prefix, item),
+            style,
+        ))));
+    }
+
+    let menu_list = List::new(menu_list_items)
+        .block(Block::default().borders(Borders::ALL).title("Select Option (↑/↓ to select, Enter to confirm)"));
+
+    frame.render_widget(menu_list, chunks[1]);
+
+    // Status/Error
+    let status_text = if app.main_menu_state.connecting {
+        format!("Connecting to server {}...", app.server_address)
+    } else if let Some(ref error) = app.main_menu_state.connection_error {
+        format!("Error: {}", error)
+    } else {
+        format!("Server: {} | Player: {} | Press Q to quit", app.server_address, app.player_name)
+    };
+
+    let status_color = if app.main_menu_state.connection_error.is_some() {
+        Color::Red
+    } else if app.main_menu_state.connecting {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+
+    let status = Paragraph::new(Text::styled(
+        status_text,
+        Style::default().fg(status_color),
+    ))
+    .block(Block::default().borders(Borders::ALL).title("Status"));
+
+    frame.render_widget(status, chunks[2]);
+}
+
+fn render_game_ui(frame: &mut Frame, app: &App) {
     // Create the layout sections: Status bar, Game area, Message log
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -20,8 +100,13 @@ pub fn ui(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     // Status bar showing player stats and current screen
+    let mode_text = match app.game_mode {
+        GameMode::SinglePlayer => "Single Player",
+        GameMode::MultiPlayer => "Multiplayer",
+    };
+    
     let status_text = format!(
-        "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
+        "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Mode: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
         app.player.hp, 
         app.player.max_hp, 
         app.turn_count, 
@@ -30,7 +115,8 @@ pub fn ui(frame: &mut Frame, app: &App) {
             MapType::Dungeon => "Dungeon",
         },
         app.player.x,
-        app.player.y
+        app.player.y,
+        mode_text
     );
     
     let status_block = Block::default()
@@ -48,6 +134,7 @@ pub fn ui(frame: &mut Frame, app: &App) {
 
     // Game area - render based on current screen
     match app.current_screen {
+        CurrentScreen::MainMenu => unreachable!(), // Handled above
         CurrentScreen::Game => render_game_map(frame, app, chunks[1]),
         CurrentScreen::Inventory => render_inventory(frame, app, chunks[1]),
         CurrentScreen::Exiting => render_exit_screen(frame, app, chunks[1]),
@@ -98,6 +185,14 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Yellow)
                         .bg(Color::DarkGray)
                 ));
+            } else if let Some(other_player) = app.other_players.values().find(|p| p.x == world_x && p.y == world_y) {
+                // Other players in multiplayer mode
+                spans.push(Span::styled(
+                    other_player.symbol.to_string(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(Color::DarkGray)
+                ));
             } else if let Some(tile) = app.game_map.tiles.get(&(world_x, world_y)) {
                 let (style, character) = get_tile_style_and_char(*tile);
                 spans.push(Span::styled(character.to_string(), style));
@@ -110,8 +205,20 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let title = match app.current_map_type {
-        MapType::Overworld => "🌍 Overworld",
-        MapType::Dungeon => "🏰 Dungeon",
+        MapType::Overworld => {
+            if app.game_mode == GameMode::MultiPlayer {
+                format!("🌍 Overworld (Players: {})", app.other_players.len() + 1)
+            } else {
+                "🌍 Overworld".to_string()
+            }
+        },
+        MapType::Dungeon => {
+            if app.game_mode == GameMode::MultiPlayer {
+                format!("🏰 Dungeon (Players: {})", app.other_players.len() + 1)
+            } else {
+                "🏰 Dungeon".to_string()
+            }
+        },
     };
 
     let game_block = Block::default()
@@ -170,7 +277,7 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
     }
 }
 
-fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {
+fn render_inventory(frame: &mut Frame, _app: &App, area: Rect) {
     let inventory_block = Block::default()
         .borders(Borders::ALL)
         .title("Inventory")
@@ -187,7 +294,7 @@ fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(inventory, area);
 }
 
-fn render_exit_screen(frame: &mut Frame, app: &App, area: Rect) {
+fn render_exit_screen(frame: &mut Frame, _app: &App, area: Rect) {
     frame.render_widget(Clear, area);
     
     let popup_block = Block::default()

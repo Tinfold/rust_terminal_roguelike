@@ -4,7 +4,7 @@ use std::{error::Error, io};
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     crossterm::{
-        event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+        event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
@@ -14,14 +14,18 @@ use ratatui::{
 mod app;
 mod ui;
 mod terrain;
+mod protocol;
+mod network;
+
 use crate::{
-    app::{App, CurrentScreen},
+    app::{App, CurrentScreen, GameMode, NetworkClient},
     ui::ui,
 };
 
 // ANCHOR: main_all
 // ANCHOR: setup_boilerplate
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     // setup terminal
     enable_raw_mode()?;
     let mut stderr = io::stderr(); // This is a special case. Normally using stdout is fine
@@ -33,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // create app and run it
     let app = App::new();
-    let res = run_app(&mut terminal, app);
+    let res = run_app(&mut terminal, app).await;
     // ANCHOR_END: application_startup
 
     // ANCHOR: ending_boilerplate
@@ -48,9 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // ANCHOR_END: ending_boilerplate
 
     // ANCHOR: final_print
-    if let Ok(do_print) = res {
-
-    } else if let Err(err) = res {
+    if let Err(err) = res {
         println!("{err:?}");
     }
 
@@ -61,19 +63,70 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 // ANCHOR: run_app_all
 // ANCHOR: run_method_signature
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<()> {
     loop {
+        // Process network messages if in multiplayer mode
+        if app.game_mode == GameMode::MultiPlayer {
+            app.process_network_messages();
+        }
+
         terminal.draw(|f| ui(f, &app))?;
 
         if let Event::Key(key) = event::read()? {
-            if key.kind == event::KeyEventKind::Press {
+            if key.kind == ratatui::crossterm::event::KeyEventKind::Press {
                 match app.current_screen {
+                    CurrentScreen::MainMenu => match key.code {
+                        KeyCode::Up => {
+                            if app.main_menu_state.selected_option > 0 {
+                                app.main_menu_state.selected_option -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.main_menu_state.selected_option < 2 {
+                                app.main_menu_state.selected_option += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            match app.main_menu_state.selected_option {
+                                0 => {
+                                    // Single Player
+                                    app.start_single_player();
+                                }
+                                1 => {
+                                    // Multiplayer - try to connect
+                                    app.main_menu_state.connecting = true;
+                                    match NetworkClient::connect(&app.server_address, app.player_name.clone()).await {
+                                        Ok(client) => {
+                                            app.start_multiplayer(client);
+                                        }
+                                        Err(e) => {
+                                            app.main_menu_state.connecting = false;
+                                            app.main_menu_state.connection_error = Some(format!("Failed to connect: {}", e));
+                                        }
+                                    }
+                                }
+                                2 => {
+                                    // Quit
+                                    app.should_quit = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char('q') => {
+                            app.should_quit = true;
+                        }
+                        _ => {}
+                    },
                     CurrentScreen::Game => match key.code {
                         KeyCode::Char('q') => {
-                            app.current_screen = CurrentScreen::Exiting;
+                            if app.game_mode == GameMode::MultiPlayer {
+                                app.disconnect();
+                            } else {
+                                app.current_screen = CurrentScreen::Exiting;
+                            }
                         }
                         KeyCode::Char('i') => {
-                            app.current_screen = CurrentScreen::Inventory;
+                            app.open_inventory();
                         }
                         KeyCode::Char('e') => {
                             app.enter_dungeon();
@@ -103,10 +156,14 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
                     },
                     CurrentScreen::Inventory => match key.code {
                         KeyCode::Char('g') | KeyCode::Esc => {
-                            app.current_screen = CurrentScreen::Game;
+                            app.close_inventory();
                         }
                         KeyCode::Char('q') => {
-                            app.current_screen = CurrentScreen::Exiting;
+                            if app.game_mode == GameMode::MultiPlayer {
+                                app.disconnect();
+                            } else {
+                                app.current_screen = CurrentScreen::Exiting;
+                            }
                         }
                         _ => {}
                     },
@@ -124,6 +181,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Result<(
         }
 
         if app.should_quit {
+            if app.game_mode == GameMode::MultiPlayer {
+                app.disconnect();
+            }
             break;
         }
     }
