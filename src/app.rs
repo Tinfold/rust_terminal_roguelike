@@ -83,16 +83,18 @@ impl App {
         // Check if the new position is valid
         if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
             match tile {
-                Tile::Floor | Tile::Grass | Tile::Road => {
+                Tile::Floor | Tile::Grass | Tile::Road | Tile::Tree => {
                     self.player.x = new_x;
                     self.player.y = new_y;
                     self.turn_count += 1;
+                    if *tile == Tile::Tree {
+                        self.messages.push("You push through the thick forest.".to_string());
+                    }
                 }
-                Tile::Wall | Tile::Tree | Tile::Mountain => {
+                Tile::Wall | Tile::Mountain => {
                     self.messages.push(format!("You can't move through {}.", 
                         match tile {
                             Tile::Wall => "a wall",
-                            Tile::Tree => "a tree",
                             Tile::Mountain => "a mountain",
                             _ => "that",
                         }

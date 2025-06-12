@@ -14,21 +14,23 @@ pub fn ui(frame: &mut Frame, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),  // Status bar
-            Constraint::Min(1),     // Game area
+            Constraint::Min(20),    // Game area (minimum height)
             Constraint::Length(5),  // Message log
         ])
         .split(frame.area());
 
     // Status bar showing player stats and current screen
     let status_text = format!(
-        "HP: {}/{} | Turn: {} | Map: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
+        "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
         app.player.hp, 
         app.player.max_hp, 
         app.turn_count, 
         match app.current_map_type {
             MapType::Overworld => "Overworld",
             MapType::Dungeon => "Dungeon",
-        }
+        },
+        app.player.x,
+        app.player.y
     );
     
     let status_block = Block::default()
@@ -67,13 +69,28 @@ pub fn ui(frame: &mut Frame, app: &App) {
 }
 
 fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
+    // Calculate the viewport size (accounting for borders)
+    let viewport_width = (area.width.saturating_sub(2)) as i32; // Subtract 2 for borders
+    let viewport_height = (area.height.saturating_sub(2)) as i32; // Subtract 2 for borders
+    
+    // Ensure minimum viewport size and make width wider to utilize terminal space better
+    let viewport_width = viewport_width.max(60); // Increased minimum width
+    let viewport_height = viewport_height.max(20); // Increased minimum height
+    
+    // Calculate camera position to center on player
+    let camera_x = app.player.x - viewport_width / 2;
+    let camera_y = app.player.y - viewport_height / 2;
+    
     let mut lines = Vec::<Line>::new();
     
-    for y in 0..app.game_map.height {
+    for viewport_y in 0..viewport_height {
         let mut spans = Vec::<Span>::new();
         
-        for x in 0..app.game_map.width {
-            if x == app.player.x && y == app.player.y {
+        for viewport_x in 0..viewport_width {
+            let world_x = camera_x + viewport_x;
+            let world_y = camera_y + viewport_y;
+            
+            if world_x == app.player.x && world_y == app.player.y {
                 // Player character with bright yellow foreground and dark background
                 spans.push(Span::styled(
                     app.player.symbol.to_string(),
@@ -81,11 +98,12 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Yellow)
                         .bg(Color::DarkGray)
                 ));
-            } else if let Some(tile) = app.game_map.tiles.get(&(x, y)) {
+            } else if let Some(tile) = app.game_map.tiles.get(&(world_x, world_y)) {
                 let (style, character) = get_tile_style_and_char(*tile);
                 spans.push(Span::styled(character.to_string(), style));
             } else {
-                spans.push(Span::styled(" ".to_string(), Style::default()));
+                // Out of bounds or empty space - show void
+                spans.push(Span::styled(" ".to_string(), Style::default().bg(Color::Black)));
             }
         }
         lines.push(Line::from(spans));
