@@ -13,7 +13,6 @@ use ratatui::{
 
 mod app;
 mod ui;
-mod terrain;
 mod network;
 
 use rust_cli_roguelike::common::protocol;
@@ -70,7 +69,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Re
             app.process_network_messages();
         }
 
-        terminal.draw(|f| ui(f, &app))?;
+        terminal.draw(|f| ui(f, &mut app))?;
 
         // Use a timeout for event reading so we can process network messages more frequently
         let timeout = std::time::Duration::from_millis(50); // 20 FPS

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use rust_cli_roguelike::common::protocol::{GameState, NetworkPlayer, PlayerId, ClientMessage, ServerMessage};
-use rust_cli_roguelike::common::game_logic::GameLogic;
+use rust_cli_roguelike::common::game_logic::{GameLogic, GameChunkManager};
 
 // Re-export common types for use by other client modules
 pub use rust_cli_roguelike::common::protocol::{CurrentScreen, MapType};
@@ -97,6 +97,7 @@ pub struct App {
     pub should_quit: bool,
     pub player: rust_cli_roguelike::common::game_logic::Player,
     pub game_map: rust_cli_roguelike::common::game_logic::GameMap,
+    pub chunk_manager: Option<GameChunkManager>, // For infinite terrain in single player
     pub messages: Vec<String>,
     pub turn_count: u32,
     pub current_map_type: rust_cli_roguelike::common::protocol::MapType,
@@ -151,6 +152,7 @@ impl App {
                 height: 0,
                 tiles: HashMap::new(),
             },
+            chunk_manager: None,
             messages: vec!["Welcome! Select game mode from the menu.".to_string()],
             turn_count: 0,
             current_map_type: MapType::Overworld,
@@ -168,8 +170,19 @@ impl App {
     pub fn start_single_player(&mut self) {
         self.game_mode = GameMode::SinglePlayer;
         self.current_screen = CurrentScreen::Game;
-        self.game_map = GameLogic::generate_overworld_map();
-        self.messages = vec!["Welcome to the overworld! Look for dungeons (D) to explore.".to_string()];
+        // Initialize infinite terrain with chunk manager
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        self.chunk_manager = Some(GameLogic::create_chunk_manager(seed));
+        // Keep the old game_map empty for multiplayer compatibility
+        self.game_map = GameMap {
+            width: 0,
+            height: 0,
+            tiles: HashMap::new(),
+        };
+        self.messages = vec!["Welcome to the infinite overworld! Explore and discover new terrain as you move.".to_string()];
     }
 
     pub fn start_multiplayer(&mut self, network_client: NetworkClient) {
@@ -294,19 +307,34 @@ impl App {
         let new_x = self.player.x + dx;
         let new_y = self.player.y + dy;
         
-        // Check if the new position is valid
-        if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
-            if GameLogic::is_movement_valid(*tile) {
+        // Use chunk manager if available (infinite terrain), otherwise use traditional map
+        let tile = if let Some(ref mut chunk_manager) = self.chunk_manager {
+            chunk_manager.get_tile(new_x, new_y)
+        } else {
+            self.game_map.tiles.get(&(new_x, new_y)).copied()
+        };
+        
+        if let Some(tile) = tile {
+            if GameLogic::is_movement_valid(tile) {
                 self.player.x = new_x;
                 self.player.y = new_y;
                 self.turn_count += 1;
                 
                 // Add flavor text for tile interactions
-                if let Some(message) = GameLogic::get_tile_interaction_message(*tile) {
+                if let Some(message) = GameLogic::get_tile_interaction_message(tile) {
                     self.messages.push(message);
                 }
             } else {
-                self.messages.push(GameLogic::get_blocked_movement_message(*tile));
+                self.messages.push(GameLogic::get_blocked_movement_message(tile));
+            }
+        } else {
+            // Empty space - allow movement in infinite terrain
+            if self.chunk_manager.is_some() {
+                self.player.x = new_x;
+                self.player.y = new_y;
+                self.turn_count += 1;
+            } else {
+                self.messages.push("You can't move there.".to_string());
             }
         }
         
@@ -317,13 +345,25 @@ impl App {
     pub fn enter_dungeon(&mut self) {
         match self.game_mode {
             GameMode::SinglePlayer => {
-                if GameLogic::is_at_dungeon_entrance(&self.game_map, self.player.x, self.player.y) {
+                // Check for dungeon entrance using chunk manager if available
+                let at_entrance = if let Some(ref mut chunk_manager) = self.chunk_manager {
+                    GameLogic::is_at_chunk_dungeon_entrance(chunk_manager, self.player.x, self.player.y)
+                } else {
+                    GameLogic::is_at_dungeon_entrance(&self.game_map, self.player.x, self.player.y)
+                };
+                
+                if at_entrance {
+                    // Switch to traditional dungeon map for now
+                    // TODO: Could also implement infinite dungeon generation
                     self.game_map = GameLogic::generate_dungeon_map();
+                    self.chunk_manager = None; // Disable chunk manager in dungeons
                     let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
                     self.player.x = spawn_x;
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Dungeon;
                     self.messages.push("You descend into the dungeon...".to_string());
+                } else {
+                    self.messages.push("You're not at a dungeon entrance.".to_string());
                 }
             }
             GameMode::MultiPlayer => {
@@ -338,12 +378,27 @@ impl App {
         match self.game_mode {
             GameMode::SinglePlayer => {
                 if self.current_map_type == MapType::Dungeon {
-                    self.game_map = GameLogic::generate_overworld_map();
+                    // Re-enable infinite terrain when returning to overworld
+                    let seed = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as u32;
+                    self.chunk_manager = Some(GameLogic::create_chunk_manager(seed));
+                    
+                    // Clear the old finite map
+                    self.game_map = GameMap {
+                        width: 0,
+                        height: 0,
+                        tiles: HashMap::new(),
+                    };
+                    
                     let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
                     self.player.x = spawn_x;
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Overworld;
-                    self.messages.push("You emerge from the dungeon into the overworld.".to_string());
+                    self.messages.push("You emerge from the dungeon into the infinite overworld.".to_string());
+                } else {
+                    self.messages.push("You're not in a dungeon.".to_string());
                 }
             }
             GameMode::MultiPlayer => {
@@ -351,9 +406,8 @@ impl App {
                     client.send_exit_dungeon();
                 }
             }
-        }
-    }
-
+        }    }
+    
     pub fn open_inventory(&mut self) {
         self.current_screen = CurrentScreen::Inventory;
         if self.game_mode == GameMode::MultiPlayer {

@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use super::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
 use super::constants::GameConstants;
 use super::terrain::TerrainGenerator;
+use super::chunk::ChunkManager;
 
 // Re-export common types that both client and server need
 pub use super::terrain::{Tile, GameMap};
+pub use super::chunk::{ChunkManager as GameChunkManager, ChunkCoord};
 
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -120,6 +122,26 @@ impl GameLogic {
         while messages.len() > max_count {
             messages.remove(0);
         }
+    }
+
+    /// Create a new chunk manager with infinite terrain
+    pub fn create_chunk_manager(seed: u32) -> GameChunkManager {
+        GameChunkManager::new(seed)
+    }
+
+    /// Check if current position has a dungeon entrance (chunk manager version)
+    pub fn is_at_chunk_dungeon_entrance(chunk_manager: &mut GameChunkManager, x: i32, y: i32) -> bool {
+        chunk_manager.get_tile(x, y) == Some(Tile::DungeonEntrance)
+    }
+
+    /// Get tiles in area from chunk manager for rendering
+    pub fn get_viewport_tiles(chunk_manager: &mut GameChunkManager, center_x: i32, center_y: i32, width: i32, height: i32) -> HashMap<(i32, i32), Tile> {
+        let min_x = center_x - width / 2;
+        let min_y = center_y - height / 2;
+        let max_x = center_x + width / 2;
+        let max_y = center_y + height / 2;
+        
+        chunk_manager.get_tiles_in_area(min_x, min_y, max_x, max_y)
     }
 }
 

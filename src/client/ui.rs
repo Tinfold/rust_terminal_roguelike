@@ -8,7 +8,7 @@ use ratatui::{
 
 use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
 
-pub fn ui(frame: &mut Frame, app: &App) {
+pub fn ui(frame: &mut Frame, app: &mut App) {
     match app.current_screen {
         CurrentScreen::MainMenu => render_main_menu(frame, app),
         CurrentScreen::Chat => render_chat_screen(frame, app),
@@ -89,7 +89,7 @@ fn render_main_menu(frame: &mut Frame, app: &App) {
     frame.render_widget(status, chunks[2]);
 }
 
-fn render_game_ui(frame: &mut Frame, app: &App) {
+fn render_game_ui(frame: &mut Frame, app: &mut App) {
     // Create the layout sections: Status bar, Game area, Message log
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -189,7 +189,7 @@ fn render_game_ui(frame: &mut Frame, app: &App) {
     frame.render_widget(message_list, chunks[2]);
 }
 
-fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
+fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
     // Calculate the viewport size (accounting for borders)
     let viewport_width = (area.width.saturating_sub(2)) as i32; // Subtract 2 for borders
     let viewport_height = (area.height.saturating_sub(2)) as i32; // Subtract 2 for borders
@@ -201,6 +201,11 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
     // Calculate camera position to center on player
     let camera_x = app.player.x - viewport_width / 2;
     let camera_y = app.player.y - viewport_height / 2;
+    
+    // Update chunk manager with player position if available
+    if let Some(ref mut chunk_manager) = app.chunk_manager {
+        chunk_manager.update_player_position(app.player.x, app.player.y);
+    }
     
     let mut lines = Vec::<Line>::new();
     
@@ -227,12 +232,22 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Cyan)
                         .bg(Color::DarkGray)
                 ));
-            } else if let Some(tile) = app.game_map.tiles.get(&(world_x, world_y)) {
-                let (style, character) = get_tile_style_and_char(*tile);
-                spans.push(Span::styled(character.to_string(), style));
             } else {
-                // Out of bounds or empty space - show void
-                spans.push(Span::styled(" ".to_string(), Style::default().bg(Color::Black)));
+                // Try to get tile from chunk manager first (for infinite terrain)
+                let tile = if let Some(ref mut chunk_manager) = app.chunk_manager {
+                    chunk_manager.get_tile(world_x, world_y)
+                } else {
+                    // Fall back to traditional game map
+                    app.game_map.tiles.get(&(world_x, world_y)).copied()
+                };
+                
+                if let Some(tile) = tile {
+                    let (style, character) = get_tile_style_and_char(tile);
+                    spans.push(Span::styled(character.to_string(), style));
+                } else {
+                    // Out of bounds or empty space - show void
+                    spans.push(Span::styled(" ".to_string(), Style::default().bg(Color::Black)));
+                }
             }
         }
         lines.push(Line::from(spans));
@@ -266,7 +281,7 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(game_area, area);
 }
 
-fn render_chat_screen(frame: &mut Frame, app: &App) {
+fn render_chat_screen(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -404,7 +419,7 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
     }
 }
 
-fn render_inventory(frame: &mut Frame, _app: &App, area: Rect) {
+fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {
     let inventory_block = Block::default()
         .borders(Borders::ALL)
         .title("Inventory")
@@ -421,7 +436,7 @@ fn render_inventory(frame: &mut Frame, _app: &App, area: Rect) {
     frame.render_widget(inventory, area);
 }
 
-fn render_exit_screen(frame: &mut Frame, _app: &App, area: Rect) {
+fn render_exit_screen(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, area);
     
     let popup_block = Block::default()
