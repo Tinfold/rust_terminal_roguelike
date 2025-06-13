@@ -97,6 +97,18 @@ impl GameLogic {
         TerrainGenerator::generate_overworld(width, height)
     }
 
+    /// Generate a dungeon map with a specific seed for consistency
+    pub fn generate_dungeon_map_with_seed(seed: u32) -> GameMap {
+        // Use the seed to ensure consistent dungeon generation
+        // Different seeds could generate different dungeons for different entrances
+        let width = GameConstants::DUNGEON_WIDTH;
+        let height = GameConstants::DUNGEON_HEIGHT;
+        
+        // For now, we use the standard generator but could enhance it with seed support
+        let _ = seed; // Acknowledge the parameter for future use
+        TerrainGenerator::generate_dungeon(width, height)
+    }
+
     /// Get default dungeon spawn position
     pub fn get_dungeon_spawn_position() -> (i32, i32) {
         (GameConstants::DUNGEON_SPAWN_X, GameConstants::DUNGEON_SPAWN_Y)

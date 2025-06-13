@@ -203,7 +203,7 @@ impl TerrainGenerator {
         }
         
         // Add dungeon entrances in interesting locations (near mountains, away from villages)
-        let dungeon_count = village_count / 2 + 1;
+        let dungeon_count = village_count + 2; // More dungeons for better accessibility
         let dungeon_noise = Perlin::new(999);
         
         for i in 0..dungeon_count {

@@ -282,17 +282,48 @@ impl App {
         // Note: In the new chunk-based system, game map data comes via ChunkData messages
         // The GameState only contains player data and game metadata
         
-        self.current_map_type = state.current_map_type;
         self.turn_count = state.turn_count;
         
-        // Update player position from network state
+        // Update player position and map type from network state
         if let Some(client) = &self.network_client {
             if let Some(player_id) = &client.player_id {
                 if let Some(network_player) = state.players.get(player_id) {
+                    let old_map_type = self.current_map_type;
+                    let new_map_type = network_player.current_map_type;
+                    
                     self.player.x = network_player.x;
                     self.player.y = network_player.y;
                     self.player.hp = network_player.hp;
                     self.player.max_hp = network_player.max_hp;
+                    self.current_map_type = new_map_type;
+                    
+                    // Handle map transitions in multiplayer
+                    if old_map_type != new_map_type {
+                        match new_map_type {
+                            MapType::Dungeon => {
+                                // Generate dungeon map when entering
+                                self.game_map = GameLogic::generate_dungeon_map();
+                                self.chunk_manager = None; // Disable chunk manager in dungeons
+                                self.messages.push("You descend into the dungeon...".to_string());
+                            }
+                            MapType::Overworld => {
+                                // Re-enable chunk manager when returning to overworld
+                                let seed = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as u32;
+                                self.chunk_manager = Some(GameLogic::create_chunk_manager(seed));
+                                
+                                // Clear the old dungeon map
+                                self.game_map = GameMap {
+                                    width: 0,
+                                    height: 0,
+                                    tiles: HashMap::new(),
+                                };
+                                self.messages.push("You emerge from the dungeon into the overworld.".to_string());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -320,10 +351,16 @@ impl App {
                 let new_x = self.player.x + dx;
                 let new_y = self.player.y + dy;
                 
-                // Check if the move is valid using multiplayer chunks first, then traditional map
-                let tile = self.get_multiplayer_tile(new_x, new_y).or_else(|| 
+                // Check if the move is valid based on current map type
+                let tile = if self.current_map_type == MapType::Dungeon {
+                    // In dungeons, use the dungeon map tiles
                     self.game_map.tiles.get(&(new_x, new_y)).copied()
-                );
+                } else {
+                    // In overworld, use multiplayer chunks first, then fall back to traditional map
+                    self.get_multiplayer_tile(new_x, new_y).or_else(|| 
+                        self.game_map.tiles.get(&(new_x, new_y)).copied()
+                    )
+                };
                 
                 if let Some(tile) = tile {
                     if GameLogic::is_movement_valid(tile) {
@@ -337,8 +374,10 @@ impl App {
                             client.send_move(dx, dy);
                         }
                         
-                        // Request chunks around new position if needed
-                        self.request_chunks_around_player();
+                        // Request chunks around new position if needed (only in overworld)
+                        if self.current_map_type == MapType::Overworld {
+                            self.request_chunks_around_player();
+                        }
                     } else {
                         self.messages.push(GameLogic::get_blocked_movement_message(tile));
                     }

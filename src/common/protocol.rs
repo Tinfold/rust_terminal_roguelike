@@ -49,9 +49,9 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub players: HashMap<PlayerId, NetworkPlayer>,
-    pub current_map_type: MapType,
     pub turn_count: u32,
     // Chunks are sent separately via ChunkData messages
+    // Note: current_map_type is now per-player
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +65,7 @@ pub struct NetworkPlayer {
     pub symbol: char,
     pub current_screen: NetworkCurrentScreen,
     pub color: (u8, u8, u8), // RGB color tuple for this player
+    pub current_map_type: MapType, // Each player can be in a different map
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
