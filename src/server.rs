@@ -9,12 +9,16 @@ use uuid::Uuid;
 mod app;
 mod terrain;
 mod protocol;
+mod game_logic;
+mod network_utils;
+mod constants;
 
 use protocol::{
-    ClientMessage, ServerMessage, GameState, NetworkPlayer, NetworkGameMap, NetworkTile,
-    NetworkMapType, NetworkCurrentScreen, PlayerId
+    ClientMessage, ServerMessage, GameState, NetworkPlayer, NetworkGameMap,
+    NetworkCurrentScreen, PlayerId
 };
-use terrain::TerrainGenerator;
+use game_logic::GameLogic;
+use crate::app::Tile;
 
 type SharedGameState = Arc<Mutex<ServerGameState>>;
 type ClientSender = mpsc::UnboundedSender<ServerMessage>;
@@ -24,38 +28,32 @@ type ClientReceiver = mpsc::UnboundedReceiver<ServerMessage>;
 struct ServerGameState {
     players: HashMap<PlayerId, NetworkPlayer>,
     game_map: NetworkGameMap,
-    current_map_type: NetworkMapType,
+    current_map_type: crate::app::MapType,
     turn_count: u32,
     client_senders: HashMap<PlayerId, ClientSender>,
 }
 
 impl ServerGameState {
     fn new() -> Self {
-        let overworld = TerrainGenerator::generate_overworld(60, 30);
-        let network_tiles: HashMap<String, NetworkTile> = overworld.tiles
-            .into_iter()
-            .map(|(pos, tile)| (protocol::coord_to_string(pos.0, pos.1), tile.into()))
-            .collect();
+        let overworld = GameLogic::generate_overworld_map();
+        let game_map = GameLogic::game_map_to_network(&overworld);
 
         Self {
             players: HashMap::new(),
-            game_map: NetworkGameMap {
-                width: overworld.width,
-                height: overworld.height,
-                tiles: network_tiles,
-            },
-            current_map_type: NetworkMapType::Overworld,
+            game_map,
+            current_map_type: crate::app::MapType::Overworld,
             turn_count: 0,
             client_senders: HashMap::new(),
         }
     }
 
     fn add_player(&mut self, player_id: PlayerId, player_name: String, sender: ClientSender) {
+        let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
         let player = NetworkPlayer {
             id: player_id.clone(),
             name: player_name,
-            x: 30,
-            y: 15,
+            x: spawn_x,
+            y: spawn_y,
             hp: 20,
             max_hp: 20,
             symbol: '@',
@@ -91,72 +89,44 @@ impl ServerGameState {
 
             // Check if the new position is valid
             if let Some(tile) = self.game_map.get_tile(new_x, new_y) {
-                match tile {
-                    NetworkTile::Floor | NetworkTile::Grass | NetworkTile::Road | NetworkTile::Tree => {
-                        player.x = new_x;
-                        player.y = new_y;
-                        self.turn_count += 1;
+                if GameLogic::is_movement_valid(*tile) {
+                    player.x = new_x;
+                    player.y = new_y;
+                    self.turn_count += 1;
 
-                        // Notify all players about the movement
-                        let move_message = ServerMessage::PlayerMoved {
-                            player_id: player_id.clone(),
-                            x: new_x,
-                            y: new_y,
+                    // Handle special tile interactions - send personalized messages to player
+                    if let Some(interaction_message) = GameLogic::get_tile_interaction_message(*tile) {
+                        let msg = ServerMessage::Message {
+                            text: interaction_message,
                         };
-                        self.broadcast_to_all(move_message);
-
-                        // Send updated game state
-                        self.broadcast_game_state();
-                        Ok(())
+                        // Send to the specific player
+                        if let Some(sender) = self.client_senders.get(player_id) {
+                            let _ = sender.send(msg);
+                        }
                     }
-                    NetworkTile::Wall | NetworkTile::Mountain => {
-                        Err(format!("Can't move through {}.", 
-                            match tile {
-                                NetworkTile::Wall => "a wall",
-                                NetworkTile::Mountain => "a mountain",
-                                _ => "that",
-                            }
-                        ))
-                    }
-                    NetworkTile::Water => {
-                        Err("You can't swim across the water.".to_string())
-                    }
-                    NetworkTile::Village => {
-                        player.x = new_x;
-                        player.y = new_y;
-                        self.turn_count += 1;
-                        
-                        let player_name = player.name.clone(); // Clone the name before other borrows
-                        
-                        let move_message = ServerMessage::PlayerMoved {
-                            player_id: player_id.clone(),
-                            x: new_x,
-                            y: new_y,
-                        };
-                        self.broadcast_to_all(move_message);
-                        self.broadcast_game_state();
-                        
+                    
+                    // Handle special multiplayer tile interactions - broadcast to all players
+                    if *tile == Tile::Village {
+                        let player_name = player.name.clone();
                         let msg = ServerMessage::Message {
                             text: format!("{} visits the village.", player_name),
                         };
                         self.broadcast_to_all(msg);
-                        Ok(())
                     }
-                    NetworkTile::DungeonEntrance => {
-                        player.x = new_x;
-                        player.y = new_y;
-                        self.turn_count += 1;
-                        
-                        let move_message = ServerMessage::PlayerMoved {
-                            player_id: player_id.clone(),
-                            x: new_x,
-                            y: new_y,
-                        };
-                        self.broadcast_to_all(move_message);
-                        self.broadcast_game_state();
-                        Ok(())
-                    }
-                    NetworkTile::Empty => Ok(()),
+
+                    // Notify all players about the movement
+                    let move_message = ServerMessage::PlayerMoved {
+                        player_id: player_id.clone(),
+                        x: new_x,
+                        y: new_y,
+                    };
+                    self.broadcast_to_all(move_message);
+
+                    // Send updated game state
+                    self.broadcast_game_state();
+                    Ok(())
+                } else {
+                    Err(GameLogic::get_blocked_movement_message(*tile))
                 }
             } else {
                 Err("Invalid position.".to_string())
@@ -168,39 +138,27 @@ impl ServerGameState {
 
     fn enter_dungeon(&mut self, player_id: &PlayerId) -> Result<(), String> {
         if let Some(player) = self.players.get(player_id) {
-            if let Some(tile) = self.game_map.get_tile(player.x, player.y) {
-                if *tile == NetworkTile::DungeonEntrance {
-                    // For simplicity, generate a new dungeon map (in a real game, you'd manage multiple map instances)
-                    let dungeon = TerrainGenerator::generate_dungeon(40, 20);
-                    let network_tiles: HashMap<String, NetworkTile> = dungeon.tiles
-                        .into_iter()
-                        .map(|(pos, tile)| (protocol::coord_to_string(pos.0, pos.1), tile.into()))
-                        .collect();
+            if GameLogic::is_at_network_dungeon_entrance(&self.game_map, player.x, player.y) {
+                // Generate a new dungeon map using shared logic
+                let dungeon = GameLogic::generate_dungeon_map();
+                self.game_map = GameLogic::game_map_to_network(&dungeon);
+                self.current_map_type = crate::app::MapType::Dungeon;
 
-                    self.game_map = NetworkGameMap {
-                        width: dungeon.width,
-                        height: dungeon.height,
-                        tiles: network_tiles,
-                    };
-                    self.current_map_type = NetworkMapType::Dungeon;
-
-                    // Move all players to dungeon start
-                    for player in self.players.values_mut() {
-                        player.x = 5;
-                        player.y = 5;
-                    }
-
-                    self.broadcast_game_state();
-                    let msg = ServerMessage::Message {
-                        text: "The party descends into the dungeon...".to_string(),
-                    };
-                    self.broadcast_to_all(msg);
-                    Ok(())
-                } else {
-                    Err("You're not at a dungeon entrance.".to_string())
+                // Move all players to dungeon start
+                let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
+                for player in self.players.values_mut() {
+                    player.x = spawn_x;
+                    player.y = spawn_y;
                 }
+
+                self.broadcast_game_state();
+                let msg = ServerMessage::Message {
+                    text: "The party descends into the dungeon...".to_string(),
+                };
+                self.broadcast_to_all(msg);
+                Ok(())
             } else {
-                Err("Invalid position.".to_string())
+                Err("You're not at a dungeon entrance.".to_string())
             }
         } else {
             Err("Player not found.".to_string())
@@ -208,24 +166,17 @@ impl ServerGameState {
     }
 
     fn exit_dungeon(&mut self, _player_id: &PlayerId) -> Result<(), String> {
-        if self.current_map_type == NetworkMapType::Dungeon {
-            let overworld = TerrainGenerator::generate_overworld(60, 30);
-            let network_tiles: HashMap<String, NetworkTile> = overworld.tiles
-                .into_iter()
-                .map(|(pos, tile)| (protocol::coord_to_string(pos.0, pos.1), tile.into()))
-                .collect();
-
-            self.game_map = NetworkGameMap {
-                width: overworld.width,
-                height: overworld.height,
-                tiles: network_tiles,
-            };
-            self.current_map_type = NetworkMapType::Overworld;
+        if self.current_map_type == crate::app::MapType::Dungeon {
+            // Generate overworld using shared logic
+            let overworld = GameLogic::generate_overworld_map();
+            self.game_map = GameLogic::game_map_to_network(&overworld);
+            self.current_map_type = crate::app::MapType::Overworld;
 
             // Move all players back to overworld
+            let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
             for player in self.players.values_mut() {
-                player.x = 30;
-                player.y = 15;
+                player.x = spawn_x;
+                player.y = spawn_y;
             }
 
             self.broadcast_game_state();
@@ -338,8 +289,9 @@ async fn handle_client(stream: TcpStream, game_state: SharedGameState) {
                             match state.move_player(&player_id, dx, dy) {
                                 Ok(_) => {}
                                 Err(err) => {
-                                    state.send_to_player(&player_id, ServerMessage::Error {
-                                        message: err,
+                                    // Send blocked movement message as regular message to match single-player experience
+                                    state.send_to_player(&player_id, ServerMessage::Message {
+                                        text: err,
                                     });
                                 }
                             }

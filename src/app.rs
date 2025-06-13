@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use crate::terrain::TerrainGenerator;
 use crate::protocol::{GameState, NetworkPlayer, PlayerId};
+use crate::game_logic::GameLogic;
 
 // Forward declaration - the actual NetworkClient is defined in network.rs
 pub struct NetworkClient {
@@ -87,7 +87,7 @@ pub struct App {
     pub player_name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CurrentScreen {
     MainMenu,
     Game,
@@ -118,7 +118,7 @@ impl MainMenuState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MapType {
     Overworld,
     Dungeon,
@@ -140,7 +140,7 @@ pub struct GameMap {
     pub tiles: HashMap<(i32, i32), Tile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Tile {
     Floor,
     Wall,
@@ -187,7 +187,7 @@ impl App {
     pub fn start_single_player(&mut self) {
         self.game_mode = GameMode::SinglePlayer;
         self.current_screen = CurrentScreen::Game;
-        self.game_map = TerrainGenerator::generate_overworld(60, 30);
+        self.game_map = GameLogic::generate_overworld_map();
         self.messages = vec!["Welcome to the overworld! Look for dungeons (D) to explore.".to_string()];
     }
 
@@ -222,28 +222,15 @@ impl App {
         // Update messages
         self.messages.extend(new_messages);
         
-        // Keep only the last 10 messages
-        if self.messages.len() > 10 {
-            self.messages.drain(0..self.messages.len() - 10);
-        }
+        // Keep only the last 10 messages using shared logic
+        GameLogic::limit_messages(&mut self.messages, 10);
     }
 
     fn update_from_network_state(&mut self, state: &GameState) {
-        // Update game map
-        let mut tiles = HashMap::new();
-        for (coord_str, network_tile) in &state.game_map.tiles {
-            if let Some((x, y)) = crate::protocol::string_to_coord(coord_str) {
-                tiles.insert((x, y), (*network_tile).into());
-            }
-        }
+        // Update game map using shared logic
+        self.game_map = GameLogic::network_map_to_game(&state.game_map);
         
-        self.game_map = GameMap {
-            width: state.game_map.width,
-            height: state.game_map.height,
-            tiles,
-        };
-        
-        self.current_map_type = state.current_map_type.into();
+        self.current_map_type = state.current_map_type;
         self.turn_count = state.turn_count;
         
         // Update player position from network state
@@ -283,31 +270,18 @@ impl App {
                 
                 // Check if the move is valid locally first
                 if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
-                    match tile {
-                        Tile::Floor | Tile::Grass | Tile::Road | Tile::Tree | Tile::Village | Tile::DungeonEntrance => {
-                            // Update local position immediately for responsive feel
-                            self.player.x = new_x;
-                            self.player.y = new_y;
-                            self.turn_count += 1;
-                            
-                            // Send move to server
-                            if let Some(ref client) = self.network_client {
-                                client.send_move(dx, dy);
-                            }
+                    if GameLogic::is_movement_valid(*tile) {
+                        // Update local position immediately for responsive feel
+                        self.player.x = new_x;
+                        self.player.y = new_y;
+                        self.turn_count += 1;
+                        
+                        // Send move to server
+                        if let Some(ref client) = self.network_client {
+                            client.send_move(dx, dy);
                         }
-                        Tile::Wall | Tile::Mountain => {
-                            self.messages.push(format!("You can't move through {}.", 
-                                match tile {
-                                    Tile::Wall => "a wall",
-                                    Tile::Mountain => "a mountain",
-                                    _ => "that",
-                                }
-                            ));
-                        }
-                        Tile::Water => {
-                            self.messages.push("You can't swim across the water.".to_string());
-                        }
-                        Tile::Empty => {}
+                    } else {
+                        self.messages.push(GameLogic::get_blocked_movement_message(*tile));
                     }
                 } else {
                     // Send move anyway in case server has different map state
@@ -325,60 +299,34 @@ impl App {
         
         // Check if the new position is valid
         if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
-            match tile {
-                Tile::Floor | Tile::Grass | Tile::Road | Tile::Tree => {
-                    self.player.x = new_x;
-                    self.player.y = new_y;
-                    self.turn_count += 1;
-                    if *tile == Tile::Tree {
-                        self.messages.push("You push through the thick forest.".to_string());
-                    }
+            if GameLogic::is_movement_valid(*tile) {
+                self.player.x = new_x;
+                self.player.y = new_y;
+                self.turn_count += 1;
+                
+                // Add flavor text for tile interactions
+                if let Some(message) = GameLogic::get_tile_interaction_message(*tile) {
+                    self.messages.push(message);
                 }
-                Tile::Wall | Tile::Mountain => {
-                    self.messages.push(format!("You can't move through {}.", 
-                        match tile {
-                            Tile::Wall => "a wall",
-                            Tile::Mountain => "a mountain",
-                            _ => "that",
-                        }
-                    ));
-                }
-                Tile::Water => {
-                    self.messages.push("You can't swim across the water.".to_string());
-                }
-                Tile::Village => {
-                    self.player.x = new_x;
-                    self.player.y = new_y;
-                    self.turn_count += 1;
-                    self.messages.push("You visit the village. The locals greet you warmly.".to_string());
-                }
-                Tile::DungeonEntrance => {
-                    self.player.x = new_x;
-                    self.player.y = new_y;
-                    self.turn_count += 1;
-                    self.messages.push("You stand before a dark dungeon entrance. Press 'e' to enter.".to_string());
-                }
-                Tile::Empty => {}
+            } else {
+                self.messages.push(GameLogic::get_blocked_movement_message(*tile));
             }
         }
         
         // Keep only the last 10 messages
-        if self.messages.len() > 10 {
-            self.messages.remove(0);
-        }
+        GameLogic::limit_messages(&mut self.messages, 10);
     }
     
     pub fn enter_dungeon(&mut self) {
         match self.game_mode {
             GameMode::SinglePlayer => {
-                if let Some(tile) = self.game_map.tiles.get(&(self.player.x, self.player.y)) {
-                    if *tile == Tile::DungeonEntrance {
-                        self.game_map = TerrainGenerator::generate_dungeon(40, 20);
-                        self.player.x = 5;
-                        self.player.y = 5;
-                        self.current_map_type = MapType::Dungeon;
-                        self.messages.push("You descend into the dungeon...".to_string());
-                    }
+                if GameLogic::is_at_dungeon_entrance(&self.game_map, self.player.x, self.player.y) {
+                    self.game_map = GameLogic::generate_dungeon_map();
+                    let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
+                    self.player.x = spawn_x;
+                    self.player.y = spawn_y;
+                    self.current_map_type = MapType::Dungeon;
+                    self.messages.push("You descend into the dungeon...".to_string());
                 }
             }
             GameMode::MultiPlayer => {
@@ -393,9 +341,10 @@ impl App {
         match self.game_mode {
             GameMode::SinglePlayer => {
                 if self.current_map_type == MapType::Dungeon {
-                    self.game_map = TerrainGenerator::generate_overworld(60, 30);
-                    self.player.x = 30;
-                    self.player.y = 15;
+                    self.game_map = GameLogic::generate_overworld_map();
+                    let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
+                    self.player.x = spawn_x;
+                    self.player.y = spawn_y;
                     self.current_map_type = MapType::Overworld;
                     self.messages.push("You emerge from the dungeon into the overworld.".to_string());
                 }
@@ -436,19 +385,3 @@ impl App {
     }
 }
 
-impl Tile {
-    pub fn to_char(self) -> char {
-        match self {
-            Tile::Floor => '.',
-            Tile::Wall => '#',
-            Tile::Empty => ' ',
-            Tile::Grass => '"',
-            Tile::Tree => 'T',
-            Tile::Mountain => '^',
-            Tile::Water => '~',
-            Tile::Road => '+',
-            Tile::Village => 'V',
-            Tile::DungeonEntrance => 'D',
-        }
-    }
-}

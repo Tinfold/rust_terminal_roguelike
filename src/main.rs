@@ -16,6 +16,9 @@ mod ui;
 mod terrain;
 mod protocol;
 mod network;
+mod game_logic;
+mod network_utils;
+mod constants;
 
 use crate::{
     app::{App, CurrentScreen, GameMode, NetworkClient},
