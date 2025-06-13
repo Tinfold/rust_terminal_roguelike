@@ -135,6 +135,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Re
                                 KeyCode::Char('i') => {
                                     app.open_inventory();
                                 }
+                                KeyCode::Char('c') => {
+                                    app.open_chat();
+                                }
                                 KeyCode::Char('e') => {
                                     app.enter_dungeon();
                                 }
@@ -171,6 +174,21 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Re
                                     } else {
                                         app.current_screen = CurrentScreen::Exiting;
                                     }
+                                }
+                                _ => {}
+                            },
+                            CurrentScreen::Chat => match key.code {
+                                KeyCode::Enter => {
+                                    app.send_chat_message();
+                                }
+                                KeyCode::Esc => {
+                                    app.close_chat();
+                                }
+                                KeyCode::Backspace => {
+                                    app.remove_char_from_chat();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.add_char_to_chat(c);
                                 }
                                 _ => {}
                             },

@@ -197,6 +197,16 @@ impl ServerGameState {
         }
     }
 
+    fn handle_chat_message(&mut self, player_id: &PlayerId, message: String) {
+        if let Some(player) = self.players.get(player_id) {
+            let chat_msg = ServerMessage::ChatMessage {
+                player_name: player.name.clone(),
+                message,
+            };
+            self.broadcast_to_all(chat_msg);
+        }
+    }
+
     fn broadcast_to_all(&self, message: ServerMessage) {
         for sender in self.client_senders.values() {
             let _ = sender.send(message.clone());
@@ -321,6 +331,9 @@ async fn handle_client(stream: TcpStream, game_state: SharedGameState) {
                         }
                         ClientMessage::CloseInventory => {
                             state.update_player_screen(&player_id, NetworkCurrentScreen::Game);
+                        }
+                        ClientMessage::Chat { message } => {
+                            state.handle_chat_message(&player_id, message);
                         }
                         ClientMessage::Disconnect => {
                             state.remove_player(&player_id);

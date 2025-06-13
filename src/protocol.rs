@@ -11,6 +11,7 @@ pub enum ClientMessage {
     ExitDungeon,
     OpenInventory,
     CloseInventory,
+    Chat { message: String },
     Disconnect,
 }
 
@@ -23,6 +24,7 @@ pub enum ServerMessage {
     PlayerLeft { player_id: PlayerId },
     Error { message: String },
     Message { text: String },
+    ChatMessage { player_name: String, message: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +58,7 @@ pub struct NetworkGameMap {
 pub enum NetworkCurrentScreen {
     Game,
     Inventory,
+    Chat,
     Exiting,
 }
 
@@ -65,6 +68,7 @@ impl From<crate::app::CurrentScreen> for NetworkCurrentScreen {
             crate::app::CurrentScreen::MainMenu => NetworkCurrentScreen::Game, // Map MainMenu to Game for network
             crate::app::CurrentScreen::Game => NetworkCurrentScreen::Game,
             crate::app::CurrentScreen::Inventory => NetworkCurrentScreen::Inventory,
+            crate::app::CurrentScreen::Chat => NetworkCurrentScreen::Chat,
             crate::app::CurrentScreen::Exiting => NetworkCurrentScreen::Exiting,
         }
     }
@@ -75,6 +79,7 @@ impl From<NetworkCurrentScreen> for crate::app::CurrentScreen {
         match screen {
             NetworkCurrentScreen::Game => crate::app::CurrentScreen::Game,
             NetworkCurrentScreen::Inventory => crate::app::CurrentScreen::Inventory,
+            NetworkCurrentScreen::Chat => crate::app::CurrentScreen::Chat,
             NetworkCurrentScreen::Exiting => crate::app::CurrentScreen::Exiting,
         }
     }

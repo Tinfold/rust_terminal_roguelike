@@ -37,6 +37,11 @@ impl NetworkClient {
                 crate::protocol::ServerMessage::Message { text } => {
                     self.messages.push(text);
                 }
+                crate::protocol::ServerMessage::ChatMessage { player_name, message } => {
+                    // Store chat message separately from game messages
+                    // This will be handled by the App struct
+                    self.messages.push(format!("[CHAT] {}: {}", player_name, message));
+                }
             }
         }
 
@@ -66,6 +71,18 @@ impl NetworkClient {
         let _ = self.sender.send(crate::protocol::ClientMessage::CloseInventory);
     }
 
+    pub fn send_chat_message(&self, message: String) {
+        let _ = self.sender.send(crate::protocol::ClientMessage::Chat { message });
+    }
+
+    pub fn send_open_chat(&self) {
+        // Chat is a local UI state, no need to notify server
+    }
+
+    pub fn send_close_chat(&self) {
+        // Chat is a local UI state, no need to notify server
+    }
+
     pub fn disconnect(&self) {
         let _ = self.sender.send(crate::protocol::ClientMessage::Disconnect);
     }
@@ -85,6 +102,9 @@ pub struct App {
     pub main_menu_state: MainMenuState,
     pub server_address: String,
     pub player_name: String,
+    // Chat functionality
+    pub chat_messages: Vec<(String, String)>, // (player_name, message)
+    pub chat_input: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -92,6 +112,7 @@ pub enum CurrentScreen {
     MainMenu,
     Game,
     Inventory,
+    Chat,
     Exiting,
 }
 
@@ -181,6 +202,8 @@ impl App {
             main_menu_state: MainMenuState::new(),
             server_address: "127.0.0.1:8080".to_string(),
             player_name: "Player".to_string(),
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
         }
     }
 
@@ -219,8 +242,24 @@ impl App {
             self.update_from_network_state(&state);
         }
         
-        // Update messages
-        self.messages.extend(new_messages);
+        // Update messages and extract chat messages
+        for message in &new_messages {
+            if let Some(chat_part) = message.strip_prefix("[CHAT] ") {
+                if let Some(colon_pos) = chat_part.find(": ") {
+                    let player_name = chat_part[..colon_pos].to_string();
+                    let chat_message = chat_part[colon_pos + 2..].to_string();
+                    self.chat_messages.push((player_name, chat_message));
+                    // Keep only the last 50 chat messages
+                    if self.chat_messages.len() > 50 {
+                        self.chat_messages.drain(0..self.chat_messages.len() - 50);
+                    }
+                } else {
+                    self.messages.push(message.clone());
+                }
+            } else {
+                self.messages.push(message.clone());
+            }
+        }
         
         // Keep only the last 10 messages using shared logic
         GameLogic::limit_messages(&mut self.messages, 10);
@@ -373,6 +412,46 @@ impl App {
                 client.send_close_inventory();
             }
         }
+    }
+
+    pub fn open_chat(&mut self) {
+        if self.game_mode == GameMode::MultiPlayer {
+            self.current_screen = CurrentScreen::Chat;
+            self.chat_input.clear();
+            if let Some(ref client) = self.network_client {
+                client.send_open_chat();
+            }
+        }
+    }
+
+    pub fn close_chat(&mut self) {
+        self.current_screen = CurrentScreen::Game;
+        self.chat_input.clear();
+        if self.game_mode == GameMode::MultiPlayer {
+            if let Some(ref client) = self.network_client {
+                client.send_close_chat();
+            }
+        }
+    }
+
+    pub fn send_chat_message(&mut self) {
+        if !self.chat_input.trim().is_empty() && self.game_mode == GameMode::MultiPlayer {
+            if let Some(ref client) = self.network_client {
+                client.send_chat_message(self.chat_input.clone());
+            }
+            self.chat_input.clear();
+            self.close_chat();
+        }
+    }
+
+    pub fn add_char_to_chat(&mut self, c: char) {
+        if self.chat_input.len() < 100 { // Limit chat message length
+            self.chat_input.push(c);
+        }
+    }
+
+    pub fn remove_char_from_chat(&mut self) {
+        self.chat_input.pop();
     }
 
     pub fn disconnect(&mut self) {

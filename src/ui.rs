@@ -11,6 +11,7 @@ use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
 pub fn ui(frame: &mut Frame, app: &App) {
     match app.current_screen {
         CurrentScreen::MainMenu => render_main_menu(frame, app),
+        CurrentScreen::Chat => render_chat_screen(frame, app),
         _ => render_game_ui(frame, app),
     }
 }
@@ -105,19 +106,35 @@ fn render_game_ui(frame: &mut Frame, app: &App) {
         GameMode::MultiPlayer => "Multiplayer",
     };
     
-    let status_text = format!(
-        "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Mode: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
-        app.player.hp, 
-        app.player.max_hp, 
-        app.turn_count, 
-        match app.current_map_type {
-            MapType::Overworld => "Overworld",
-            MapType::Dungeon => "Dungeon",
-        },
-        app.player.x,
-        app.player.y,
-        mode_text
-    );
+    let status_text = if app.game_mode == GameMode::MultiPlayer {
+        format!(
+            "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Mode: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), C (chat), Q (quit)",
+            app.player.hp, 
+            app.player.max_hp, 
+            app.turn_count, 
+            match app.current_map_type {
+                MapType::Overworld => "Overworld",
+                MapType::Dungeon => "Dungeon",
+            },
+            app.player.x,
+            app.player.y,
+            mode_text
+        )
+    } else {
+        format!(
+            "HP: {}/{} | Turn: {} | Map: {} | Position: ({}, {}) | Mode: {} | Controls: HJKL/Arrows (move), E (enter dungeon), X (exit dungeon), I (inventory), Q (quit)",
+            app.player.hp, 
+            app.player.max_hp, 
+            app.turn_count, 
+            match app.current_map_type {
+                MapType::Overworld => "Overworld",
+                MapType::Dungeon => "Dungeon",
+            },
+            app.player.x,
+            app.player.y,
+            mode_text
+        )
+    };
     
     let status_block = Block::default()
         .borders(Borders::ALL)
@@ -132,10 +149,27 @@ fn render_game_ui(frame: &mut Frame, app: &App) {
 
     frame.render_widget(status, chunks[0]);
 
-    // Game area - render based on current screen
+    // Game area - render based on current screen and mode
     match app.current_screen {
         CurrentScreen::MainMenu => unreachable!(), // Handled above
-        CurrentScreen::Game => render_game_map(frame, app, chunks[1]),
+        CurrentScreen::Chat => unreachable!(), // Handled separately
+        CurrentScreen::Game => {
+            if app.game_mode == GameMode::MultiPlayer && !app.chat_messages.is_empty() {
+                // Split game area horizontally to show chat widget
+                let game_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Min(60),     // Game map (minimum width)
+                        Constraint::Length(30),  // Chat widget (fixed width)
+                    ])
+                    .split(chunks[1]);
+                
+                render_game_map(frame, app, game_chunks[0]);
+                render_chat_widget(frame, app, game_chunks[1]);
+            } else {
+                render_game_map(frame, app, chunks[1]);
+            }
+        },
         CurrentScreen::Inventory => render_inventory(frame, app, chunks[1]),
         CurrentScreen::Exiting => render_exit_screen(frame, app, chunks[1]),
     }
@@ -230,6 +264,99 @@ fn render_game_map(frame: &mut Frame, app: &App, area: Rect) {
         .block(game_block);
 
     frame.render_widget(game_area, area);
+}
+
+fn render_chat_screen(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),   // Title
+            Constraint::Min(10),     // Chat messages
+            Constraint::Length(3),   // Input box
+            Constraint::Length(2),   // Instructions
+        ])
+        .split(frame.area());
+
+    // Title
+    let title = Paragraph::new(Text::styled(
+        "💬 Chat Window",
+        Style::default().fg(Color::Yellow),
+    ))
+    .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(title, chunks[0]);
+
+    // Chat messages
+    let mut chat_items = Vec::<ListItem>::new();
+    for (player_name, message) in app.chat_messages.iter().rev().take(15) { // Show last 15 messages
+        chat_items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{}: ", player_name),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                message.clone(),
+                Style::default().fg(Color::White),
+            ),
+        ])));
+    }
+    chat_items.reverse(); // Show messages in chronological order
+
+    let chat_list = List::new(chat_items)
+        .block(Block::default().borders(Borders::ALL).title("Chat Messages"));
+    frame.render_widget(chat_list, chunks[1]);
+
+    // Input box
+    let input_text = format!("> {}", app.chat_input);
+    let input = Paragraph::new(Text::styled(
+        input_text,
+        Style::default().fg(Color::Green),
+    ))
+    .block(Block::default().borders(Borders::ALL).title("Type your message"));
+    frame.render_widget(input, chunks[2]);
+
+    // Instructions
+    let instructions = Paragraph::new(Text::styled(
+        "Press Enter to send, Esc to close chat",
+        Style::default().fg(Color::Gray),
+    ))
+    .block(Block::default().borders(Borders::ALL));
+    frame.render_widget(instructions, chunks[3]);
+}
+
+fn render_chat_widget(frame: &mut Frame, app: &App, area: Rect) {
+    // Chat widget for multiplayer mode
+    let mut chat_items = Vec::<ListItem>::new();
+    
+    // Show the last 10 chat messages in the widget
+    for (player_name, message) in app.chat_messages.iter().rev().take(10) {
+        // Truncate long messages to fit in the widget
+        let truncated_message = if message.len() > 25 {
+            format!("{}...", &message[..22])
+        } else {
+            message.clone()
+        };
+        
+        chat_items.push(ListItem::new(Line::from(vec![
+            Span::styled(
+                format!("{}: ", player_name),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(
+                truncated_message,
+                Style::default().fg(Color::White),
+            ),
+        ])));
+    }
+    chat_items.reverse(); // Show messages in chronological order
+
+    let chat_title = format!("💬 Chat ({})", app.chat_messages.len());
+    let chat_list = List::new(chat_items)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title(chat_title)
+            .title_style(Style::default().fg(Color::Yellow)));
+    
+    frame.render_widget(chat_list, area);
 }
 
 fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
