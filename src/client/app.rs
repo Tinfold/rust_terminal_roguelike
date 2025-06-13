@@ -229,6 +229,9 @@ impl App {
         self.network_client = Some(network_client);
         self.current_screen = CurrentScreen::Game;
         self.messages = vec!["Connected to multiplayer server!".to_string()];
+        
+        // Request initial chunks around the player's spawn position
+        self.request_chunks_around_player();
     }
 
     pub fn process_network_messages(&mut self) {
