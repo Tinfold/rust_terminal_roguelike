@@ -120,45 +120,67 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Re
                                 }
                                 _ => {}
                             },
-                            CurrentScreen::Game => match key.code {
-                                KeyCode::Char('q') => {
-                                    if app.game_mode == GameMode::MultiPlayer {
-                                        app.disconnect();
-                                    } else {
-                                        app.current_screen = CurrentScreen::Exiting;
+                            CurrentScreen::Game => {
+                                if app.chat_input_mode {
+                                    // Handle chat input mode
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.send_chat_message();
+                                        }
+                                        KeyCode::Esc => {
+                                            app.close_chat();
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.remove_char_from_chat();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.add_char_to_chat(c);
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    // Handle normal game controls
+                                    match key.code {
+                                        KeyCode::Char('q') => {
+                                            if app.game_mode == GameMode::MultiPlayer {
+                                                app.disconnect();
+                                            } else {
+                                                app.current_screen = CurrentScreen::Exiting;
+                                            }
+                                        }
+                                        KeyCode::Char('i') => {
+                                            app.open_inventory();
+                                        }
+                                        KeyCode::Char('c') => {
+                                            app.open_chat();
+                                        }
+                                        KeyCode::Char('e') => {
+                                            app.enter_dungeon();
+                                        }
+                                        KeyCode::Char('x') => {
+                                            app.exit_dungeon();
+                                        }
+                                        // Movement keys (vi-style)
+                                        KeyCode::Char('h') | KeyCode::Left => {
+                                            app.move_player(-1, 0);
+                                        }
+                                        KeyCode::Char('j') | KeyCode::Down => {
+                                            app.move_player(0, 1);
+                                        }
+                                        KeyCode::Char('k') | KeyCode::Up => {
+                                            app.move_player(0, -1);
+                                        }
+                                        KeyCode::Char('l') | KeyCode::Right => {
+                                            app.move_player(1, 0);
+                                        }
+                                        // Diagonal movement
+                                        KeyCode::Char('y') => app.move_player(-1, -1),
+                                        KeyCode::Char('u') => app.move_player(1, -1),
+                                        KeyCode::Char('b') => app.move_player(-1, 1),
+                                        KeyCode::Char('n') => app.move_player(1, 1),
+                                        _ => {}
                                     }
                                 }
-                                KeyCode::Char('i') => {
-                                    app.open_inventory();
-                                }
-                                KeyCode::Char('c') => {
-                                    app.open_chat();
-                                }
-                                KeyCode::Char('e') => {
-                                    app.enter_dungeon();
-                                }
-                                KeyCode::Char('x') => {
-                                    app.exit_dungeon();
-                                }
-                                // Movement keys (vi-style)
-                                KeyCode::Char('h') | KeyCode::Left => {
-                                    app.move_player(-1, 0);
-                                }
-                                KeyCode::Char('j') | KeyCode::Down => {
-                                    app.move_player(0, 1);
-                                }
-                                KeyCode::Char('k') | KeyCode::Up => {
-                                    app.move_player(0, -1);
-                                }
-                                KeyCode::Char('l') | KeyCode::Right => {
-                                    app.move_player(1, 0);
-                                }
-                                // Diagonal movement
-                                KeyCode::Char('y') => app.move_player(-1, -1),
-                                KeyCode::Char('u') => app.move_player(1, -1),
-                                KeyCode::Char('b') => app.move_player(-1, 1),
-                                KeyCode::Char('n') => app.move_player(1, 1),
-                                _ => {}
                             },
                             CurrentScreen::Inventory => match key.code {
                                 KeyCode::Char('g') | KeyCode::Esc => {

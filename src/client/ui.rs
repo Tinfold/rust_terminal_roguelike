@@ -90,14 +90,25 @@ fn render_main_menu(frame: &mut Frame, app: &App) {
 }
 
 fn render_game_ui(frame: &mut Frame, app: &mut App) {
-    // Create the layout sections: Status bar, Game area, Message log
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    // Create the layout sections based on chat input mode
+    let constraints = if app.chat_input_mode && app.game_mode == GameMode::MultiPlayer {
+        vec![
+            Constraint::Length(3),  // Status bar
+            Constraint::Min(20),    // Game area (minimum height)
+            Constraint::Length(3),  // Chat input bar (full width)
+            Constraint::Length(5),  // Message log
+        ]
+    } else {
+        vec![
             Constraint::Length(3),  // Status bar
             Constraint::Min(20),    // Game area (minimum height)
             Constraint::Length(5),  // Message log
-        ])
+        ]
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
         .split(frame.area());
 
     // Status bar showing player stats and current screen
@@ -174,21 +185,39 @@ fn render_game_ui(frame: &mut Frame, app: &mut App) {
         CurrentScreen::Exiting => render_exit_screen(frame, app, chunks[1]),
     }
 
-    // Message log
-    let mut message_items = Vec::<ListItem>::new();
-    for message in app.messages.iter().rev().take(3) {
-        message_items.push(ListItem::new(Line::from(Span::styled(
-            message.clone(),
-            Style::default().fg(Color::Cyan),
-        ))));
+    // Chat input bar (if in chat input mode) - full width under game area
+    if app.chat_input_mode && app.game_mode == GameMode::MultiPlayer {
+        render_chat_input_bar(frame, app, chunks[2]);
+        
+        // Message log is now at index 3
+        let mut message_items = Vec::<ListItem>::new();
+        for message in app.messages.iter().rev().take(3) {
+            message_items.push(ListItem::new(Line::from(Span::styled(
+                message.clone(),
+                Style::default().fg(Color::Cyan),
+            ))));
+        }
+
+        let message_list = List::new(message_items)
+            .block(Block::default().borders(Borders::ALL).title("Messages"));
+
+        frame.render_widget(message_list, chunks[3]);
+    } else {
+        // Message log at normal position when not in chat input mode
+        let mut message_items = Vec::<ListItem>::new();
+        for message in app.messages.iter().rev().take(3) {
+            message_items.push(ListItem::new(Line::from(Span::styled(
+                message.clone(),
+                Style::default().fg(Color::Cyan),
+            ))));
+        }
+
+        let message_list = List::new(message_items)
+            .block(Block::default().borders(Borders::ALL).title("Messages"));
+
+        frame.render_widget(message_list, chunks[2]);
     }
-
-    let message_list = List::new(message_items)
-        .block(Block::default().borders(Borders::ALL).title("Messages"));
-
-    frame.render_widget(message_list, chunks[2]);
 }
-
 fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
     // Calculate the viewport size (accounting for borders)
     let viewport_width = (area.width.saturating_sub(2)) as i32; // Subtract 2 for borders
@@ -308,33 +337,63 @@ fn render_chat_screen(frame: &mut Frame, app: &mut App) {
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, chunks[0]);
 
-    // Chat messages
-    let mut chat_items = Vec::<ListItem>::new();
+    // Chat messages with text wrapping
+    let available_width = chunks[1].width.saturating_sub(4) as usize; // Account for borders and padding
+    
+    // Collect all messages first with their wrapping
+    let mut chat_lines = Vec::new();
+    
     for (player_name, message) in app.chat_messages.iter().rev().take(15) { // Show last 15 messages
-        chat_items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{}: ", player_name),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                message.clone(),
-                Style::default().fg(Color::White),
-            ),
-        ])));
+        let full_message = format!("{}: {}", player_name, message);
+        let wrapped_lines = wrap_text(&full_message, available_width);
+        
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            if i == 0 {
+                // First line: show player name in cyan, message in white
+                let name_end = player_name.len() + 2; // +2 for ": "
+                if line.len() > name_end {
+                    chat_lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{}: ", player_name),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::styled(
+                            line[name_end..].to_string(),
+                            Style::default().fg(Color::White),
+                        ),
+                    ]));
+                } else {
+                    chat_lines.push(Line::from(Span::styled(
+                        line.clone(),
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
+            } else {
+                // Continuation lines: indent and show in white
+                chat_lines.push(Line::from(Span::styled(
+                    format!("  {}", line), // 2-space indent for wrapped lines
+                    Style::default().fg(Color::White),
+                )));
+            }
+        }
     }
-    chat_items.reverse(); // Show messages in chronological order
+    
+    // Reverse to show in chronological order (oldest at top, newest at bottom)
+    chat_lines.reverse();
 
-    let chat_list = List::new(chat_items)
-        .block(Block::default().borders(Borders::ALL).title("Chat Messages"));
-    frame.render_widget(chat_list, chunks[1]);
+    let chat_paragraph = Paragraph::new(Text::from(chat_lines))
+        .block(Block::default().borders(Borders::ALL).title("Chat Messages"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(chat_paragraph, chunks[1]);
 
-    // Input box
+    // Input box with text wrapping
     let input_text = format!("> {}", app.chat_input);
     let input = Paragraph::new(Text::styled(
         input_text,
         Style::default().fg(Color::Green),
     ))
-    .block(Block::default().borders(Borders::ALL).title("Type your message"));
+    .block(Block::default().borders(Borders::ALL).title("Type your message"))
+    .wrap(Wrap { trim: false });
     frame.render_widget(input, chunks[2]);
 
     // Instructions
@@ -347,39 +406,73 @@ fn render_chat_screen(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_chat_widget(frame: &mut Frame, app: &App, area: Rect) {
-    // Chat widget for multiplayer mode
-    let mut chat_items = Vec::<ListItem>::new();
+    // Chat widget for multiplayer mode - use Paragraph with wrapping instead of List
+    let mut chat_lines = Vec::<Line>::new();
     
-    // Show the last 10 chat messages in the widget
-    for (player_name, message) in app.chat_messages.iter().rev().take(10) {
-        // Truncate long messages to fit in the widget
-        let truncated_message = if message.len() > 25 {
-            format!("{}...", &message[..22])
-        } else {
-            message.clone()
-        };
+    // Available width for text (accounting for borders and padding)
+    let available_width = area.width.saturating_sub(4) as usize; // 2 for borders, 2 for padding
+    let available_height = (area.height.saturating_sub(2)) as usize; // Account for borders
+    
+    // Process messages from newest to oldest, but collect them to reverse the order later
+    let mut all_messages = Vec::new();
+    let mut total_lines = 0;
+    
+    for (player_name, message) in app.chat_messages.iter().rev().take(15) {
+        let full_message = format!("{}: {}", player_name, message);
+        let wrapped_lines = wrap_text(&full_message, available_width);
         
-        chat_items.push(ListItem::new(Line::from(vec![
-            Span::styled(
-                format!("{}: ", player_name),
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                truncated_message,
-                Style::default().fg(Color::White),
-            ),
-        ])));
+        // Check if adding this message would exceed available height
+        let lines_count = wrapped_lines.len();
+        if total_lines + lines_count > available_height {
+            break;
+        }
+        
+        all_messages.push((player_name.clone(), wrapped_lines));
+        total_lines += lines_count;
     }
-    chat_items.reverse(); // Show messages in chronological order
+    
+    // Now process in chronological order (oldest first)
+    for (player_name, wrapped_lines) in all_messages.iter().rev() {
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            if i == 0 {
+                // First line: show player name in cyan, message in white
+                let name_end = player_name.len() + 2; // +2 for ": "
+                if line.len() > name_end {
+                    chat_lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("{}: ", player_name),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::styled(
+                            line[name_end..].to_string(),
+                            Style::default().fg(Color::White),
+                        ),
+                    ]));
+                } else {
+                    chat_lines.push(Line::from(Span::styled(
+                        line.clone(),
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
+            } else {
+                // Continuation lines: indent and show in white
+                chat_lines.push(Line::from(Span::styled(
+                    format!("  {}", line), // 2-space indent for wrapped lines
+                    Style::default().fg(Color::White),
+                )));
+            }
+        }
+    }
 
     let chat_title = format!("💬 Chat ({})", app.chat_messages.len());
-    let chat_list = List::new(chat_items)
+    let chat_paragraph = Paragraph::new(Text::from(chat_lines))
         .block(Block::default()
             .borders(Borders::ALL)
             .title(chat_title)
-            .title_style(Style::default().fg(Color::Yellow)));
+            .title_style(Style::default().fg(Color::Yellow)))
+        .wrap(Wrap { trim: false });
     
-    frame.render_widget(chat_list, area);
+    frame.render_widget(chat_paragraph, area);
 }
 
 fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
@@ -427,7 +520,7 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
     }
 }
 
-fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {
+fn render_inventory(frame: &mut Frame, _app: &App, area: Rect) {
     let inventory_block = Block::default()
         .borders(Borders::ALL)
         .title("Inventory")
@@ -444,7 +537,7 @@ fn render_inventory(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(inventory, area);
 }
 
-fn render_exit_screen(frame: &mut Frame, app: &App, area: Rect) {
+fn render_exit_screen(frame: &mut Frame, _app: &App, area: Rect) {
     frame.render_widget(Clear, area);
     
     let popup_block = Block::default()
@@ -484,4 +577,78 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+// Helper function to wrap text to a specified width
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut lines = Vec::new();
+    let mut current_line = String::new();
+    
+    for word in words {
+        // If adding this word would exceed the width, start a new line
+        if !current_line.is_empty() && current_line.len() + 1 + word.len() > width {
+            lines.push(current_line);
+            current_line = word.to_string();
+        } else {
+            if !current_line.is_empty() {
+                current_line.push(' ');
+            }
+            current_line.push_str(word);
+        }
+    }
+    
+    // Add the last line if it's not empty
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+    
+    // Return at least one line (empty if no words)
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    
+    lines
+}
+
+fn render_chat_input_bar(frame: &mut Frame, app: &App, area: Rect) {
+    // Wrap the chat input text to fit the available width
+    let available_width = (area.width.saturating_sub(4)) as usize; // Account for borders and prefix
+    let prefix = "> ";
+    let wrapped_lines = wrap_text(&app.chat_input, available_width.saturating_sub(prefix.len()));
+    
+    // Create text with proper wrapping - display from top to bottom
+    let mut lines = Vec::new();
+    
+    if wrapped_lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            prefix.to_string(),
+            Style::default().fg(Color::Green),
+        )));
+    } else {
+        for (i, line) in wrapped_lines.iter().enumerate() {
+            let display_line = if i == 0 {
+                format!("{}{}", prefix, line)
+            } else {
+                format!("  {}", line) // Indent continuation lines
+            };
+            
+            lines.push(Line::from(Span::styled(
+                display_line,
+                Style::default().fg(Color::Green),
+            )));
+        }
+    }
+    
+    let chat_input_widget = Paragraph::new(Text::from(lines))
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .title("💬 Chat (Press Enter to send, Esc to cancel)")
+            .title_style(Style::default().fg(Color::Yellow)));
+    
+    frame.render_widget(chat_input_widget, area);
 }

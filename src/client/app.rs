@@ -139,6 +139,7 @@ pub struct App {
     // Chat functionality
     pub chat_messages: Vec<(String, String)>, // (player_name, message)
     pub chat_input: String,
+    pub chat_input_mode: bool, // True when actively typing in the chat bar
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,6 +195,7 @@ impl App {
             player_name: "Player".to_string(),
             chat_messages: Vec::new(),
             chat_input: String::new(),
+            chat_input_mode: false,
         }
     }
 
@@ -468,22 +470,14 @@ impl App {
 
     pub fn open_chat(&mut self) {
         if self.game_mode == GameMode::MultiPlayer {
-            self.current_screen = CurrentScreen::Chat;
+            self.chat_input_mode = true;
             self.chat_input.clear();
-            if let Some(ref client) = self.network_client {
-                client.send_open_chat();
-            }
         }
     }
 
     pub fn close_chat(&mut self) {
-        self.current_screen = CurrentScreen::Game;
+        self.chat_input_mode = false;
         self.chat_input.clear();
-        if self.game_mode == GameMode::MultiPlayer {
-            if let Some(ref client) = self.network_client {
-                client.send_close_chat();
-            }
-        }
     }
 
     pub fn send_chat_message(&mut self) {
@@ -492,7 +486,7 @@ impl App {
                 client.send_chat_message(self.chat_input.clone());
             }
             self.chat_input.clear();
-            self.close_chat();
+            self.chat_input_mode = false;
         }
     }
 
