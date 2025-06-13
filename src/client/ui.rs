@@ -285,7 +285,6 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                     other_player.symbol.to_string(),
                     Style::default()
                         .fg(player_color)
-                        .bg(Color::DarkGray)
                 ));
             } else {
                 // Try to get tile from different sources based on game mode
@@ -378,11 +377,15 @@ fn render_chat_screen(frame: &mut Frame, app: &mut App) {
                 // First line: show player name in their assigned color, message in white
                 let name_end = player_name.len() + 2; // +2 for ": "
                 
-                // Find the player's color from other_players or use default
-                let player_color = app.other_players.values()
-                    .find(|p| p.name == *player_name)
-                    .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
-                    .unwrap_or(Color::Cyan);
+                // Find the player's color - check if it's current player (yellow) or other players
+                let player_color = if *player_name == app.player_name {
+                    Color::Yellow // Current player uses yellow like on the map
+                } else {
+                    app.other_players.values()
+                        .find(|p| p.name == *player_name)
+                        .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
+                        .unwrap_or(Color::Cyan)
+                };
                 
                 if line.len() > name_end {
                     chat_lines.push(Line::from(vec![
@@ -471,11 +474,15 @@ fn render_chat_widget(frame: &mut Frame, app: &App, area: Rect) {
                 // First line: show player name in their assigned color, message in white
                 let name_end = player_name.len() + 2; // +2 for ": "
                 
-                // Find the player's color from other_players or use default
-                let player_color = app.other_players.values()
-                    .find(|p| p.name == *player_name)
-                    .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
-                    .unwrap_or(Color::Cyan);
+                // Find the player's color - check if it's current player (yellow) or other players
+                let player_color = if *player_name == app.player_name {
+                    Color::Yellow // Current player uses yellow like on the map
+                } else {
+                    app.other_players.values()
+                        .find(|p| p.name == *player_name)
+                        .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
+                        .unwrap_or(Color::Cyan)
+                };
                 
                 if line.len() > name_end {
                     chat_lines.push(Line::from(vec![

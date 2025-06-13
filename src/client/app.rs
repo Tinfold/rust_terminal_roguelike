@@ -196,7 +196,10 @@ impl App {
             other_players: HashMap::new(),
             main_menu_state: MainMenuState::new(),
             server_address: "127.0.0.1:8080".to_string(),
-            player_name: "Player".to_string(),
+            player_name: format!("Player{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() % 10000), // Generate unique default name
             chat_messages: Vec::new(),
             chat_input: String::new(),
             chat_input_mode: false,
