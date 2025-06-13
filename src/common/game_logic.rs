@@ -2,29 +2,10 @@
 use std::collections::HashMap;
 use super::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
 use super::constants::GameConstants;
+use super::terrain::TerrainGenerator;
 
 // Re-export common types that both client and server need
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Tile {
-    Floor,
-    Wall,
-    Empty,
-    // Overworld tiles
-    Grass,
-    Tree,
-    Mountain,
-    Water,
-    Road,
-    Village,
-    DungeonEntrance,
-}
-
-#[derive(Debug, Clone)]
-pub struct GameMap {
-    pub width: i32,
-    pub height: i32,
-    pub tiles: HashMap<(i32, i32), Tile>,
-}
+pub use super::terrain::{Tile, GameMap};
 
 #[derive(Debug, Clone)]
 pub struct Player {
@@ -98,52 +79,20 @@ impl GameLogic {
 
     /// Common logic for entering a dungeon - generates the dungeon map
     pub fn generate_dungeon_map() -> GameMap {
-        // For now, create a simple empty dungeon map
-        // In a full implementation, this would call TerrainGenerator from the client
-        let mut tiles = HashMap::new();
+        // Use the sophisticated terrain generator from the terrain module
         let width = GameConstants::DUNGEON_WIDTH;
         let height = GameConstants::DUNGEON_HEIGHT;
         
-        // Create a simple dungeon layout
-        for x in 0..width {
-            for y in 0..height {
-                let tile = if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
-                    Tile::Wall
-                } else {
-                    Tile::Floor
-                };
-                tiles.insert((x, y), tile);
-            }
-        }
-        
-        GameMap { width, height, tiles }
+        TerrainGenerator::generate_dungeon(width, height)
     }
 
     /// Common logic for exiting to overworld - generates the overworld map
     pub fn generate_overworld_map() -> GameMap {
-        // For now, create a simple overworld map
-        // In a full implementation, this would call TerrainGenerator from the client
-        let mut tiles = HashMap::new();
+        // Use the sophisticated terrain generator from the terrain module
         let width = GameConstants::OVERWORLD_WIDTH;
         let height = GameConstants::OVERWORLD_HEIGHT;
         
-        // Create a simple overworld layout
-        for x in 0..width {
-            for y in 0..height {
-                let tile = if x % 10 == 0 && y % 10 == 0 {
-                    Tile::DungeonEntrance
-                } else if (x + y) % 7 == 0 {
-                    Tile::Tree
-                } else if (x + y) % 13 == 0 {
-                    Tile::Village
-                } else {
-                    Tile::Grass
-                };
-                tiles.insert((x, y), tile);
-            }
-        }
-        
-        GameMap { width, height, tiles }
+        TerrainGenerator::generate_overworld(width, height)
     }
 
     /// Get default dungeon spawn position

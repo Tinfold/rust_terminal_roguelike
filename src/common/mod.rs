@@ -2,3 +2,4 @@
 pub mod protocol;
 pub mod game_logic;
 pub mod constants;
+pub mod terrain;
