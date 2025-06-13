@@ -24,6 +24,7 @@ pub enum CurrentScreen {
 pub enum ClientMessage {
     Connect { player_name: String },
     Move { dx: i32, dy: i32 },
+    RequestChunks { chunks: Vec<(i32, i32)> }, // Request specific chunk coordinates
     EnterDungeon,
     ExitDungeon,
     OpenInventory,
@@ -36,6 +37,7 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Connected { player_id: PlayerId },
     GameState { state: GameState },
+    ChunkData { chunks: Vec<ChunkData> }, // Send chunk data to clients
     PlayerMoved { player_id: PlayerId, x: i32, y: i32 },
     PlayerJoined { player_id: PlayerId, player: NetworkPlayer },
     PlayerLeft { player_id: PlayerId },
@@ -47,9 +49,9 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub players: HashMap<PlayerId, NetworkPlayer>,
-    pub game_map: NetworkGameMap,
     pub current_map_type: MapType,
     pub turn_count: u32,
+    // Chunks are sent separately via ChunkData messages
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +71,13 @@ pub struct NetworkGameMap {
     pub width: i32,
     pub height: i32,
     pub tiles: HashMap<String, Tile>, // Using Tile directly now
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkData {
+    pub chunk_x: i32,
+    pub chunk_y: i32,
+    pub tiles: HashMap<String, Tile>, // Local coordinates as string keys (e.g., "0,0" to "31,31")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -233,12 +233,20 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                         .bg(Color::DarkGray)
                 ));
             } else {
-                // Try to get tile from chunk manager first (for infinite terrain)
-                let tile = if let Some(ref mut chunk_manager) = app.chunk_manager {
-                    chunk_manager.get_tile(world_x, world_y)
+                // Try to get tile from different sources based on game mode
+                let tile = if app.game_mode == GameMode::SinglePlayer {
+                    // Single player: use chunk manager for infinite terrain
+                    if let Some(ref mut chunk_manager) = app.chunk_manager {
+                        chunk_manager.get_tile(world_x, world_y)
+                    } else {
+                        // Fall back to traditional game map
+                        app.game_map.tiles.get(&(world_x, world_y)).copied()
+                    }
                 } else {
-                    // Fall back to traditional game map
-                    app.game_map.tiles.get(&(world_x, world_y)).copied()
+                    // Multiplayer: try multiplayer chunks first, then traditional map
+                    app.get_multiplayer_tile(world_x, world_y).or_else(|| 
+                        app.game_map.tiles.get(&(world_x, world_y)).copied()
+                    )
                 };
                 
                 if let Some(tile) = tile {

@@ -120,6 +120,7 @@ impl Chunk {
 }
 
 /// Manages infinite terrain generation using a chunking system
+#[derive(Debug)]
 pub struct InfiniteTerrainGenerator {
     elevation_noise: Perlin,
     moisture_noise: Perlin,
@@ -330,6 +331,7 @@ impl InfiniteTerrainGenerator {
 }
 
 /// Manages loaded chunks and provides infinite terrain
+#[derive(Debug)]
 pub struct ChunkManager {
     chunks: HashMap<ChunkCoord, Chunk>,
     terrain_generator: InfiniteTerrainGenerator,

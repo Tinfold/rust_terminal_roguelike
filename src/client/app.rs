@@ -6,6 +6,17 @@ use rust_cli_roguelike::common::game_logic::{GameLogic, GameChunkManager};
 pub use rust_cli_roguelike::common::protocol::{CurrentScreen, MapType};
 pub use rust_cli_roguelike::common::game_logic::{Tile, GameMap, Player};
 
+// Helper function to parse local coordinate strings like "0,0"
+fn parse_local_coords(coord_str: &str) -> Result<(i32, i32), ()> {
+    let parts: Vec<&str> = coord_str.split(',').collect();
+    if parts.len() == 2 {
+        if let (Ok(x), Ok(y)) = (parts[0].parse::<i32>(), parts[1].parse::<i32>()) {
+            return Ok((x, y));
+        }
+    }
+    Err(())
+}
+
 // Forward declaration - the actual NetworkClient is defined in network.rs
 pub struct NetworkClient {
     pub sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
@@ -13,38 +24,51 @@ pub struct NetworkClient {
     pub player_id: Option<PlayerId>,
     pub game_state: Option<GameState>,
     pub messages: Vec<String>,
+    pub multiplayer_chunks: HashMap<(i32, i32), HashMap<(i32, i32), Tile>>, // For multiplayer chunk storage
 }
 
 impl NetworkClient {
     pub fn process_messages(&mut self) {
         while let Ok(msg) = self.receiver.try_recv() {
             match msg {
-                crate::protocol::ServerMessage::Connected { player_id } => {
+                ServerMessage::Connected { player_id } => {
                     self.player_id = Some(player_id);
                     self.messages.push("Connected to server!".to_string());
                 }
-                crate::protocol::ServerMessage::GameState { state } => {
+                ServerMessage::GameState { state } => {
                     self.game_state = Some(state);
                 }
-                crate::protocol::ServerMessage::PlayerMoved { .. } => {
+                ServerMessage::PlayerMoved { .. } => {
                     // Game state will be updated in the next GameState message
                 }
-                crate::protocol::ServerMessage::PlayerJoined { player_id: _, player } => {
+                ServerMessage::PlayerJoined { player_id: _, player } => {
                     self.messages.push(format!("{} joined the game!", player.name));
                 }
-                crate::protocol::ServerMessage::PlayerLeft { player_id } => {
+                ServerMessage::PlayerLeft { player_id } => {
                     self.messages.push(format!("Player {} left the game!", player_id));
                 }
-                crate::protocol::ServerMessage::Error { message } => {
+                ServerMessage::Error { message } => {
                     self.messages.push(format!("Error: {}", message));
                 }
-                crate::protocol::ServerMessage::Message { text } => {
+                ServerMessage::Message { text } => {
                     self.messages.push(text);
                 }
-                crate::protocol::ServerMessage::ChatMessage { player_name, message } => {
+                ServerMessage::ChatMessage { player_name, message } => {
                     // Store chat message separately from game messages
                     // This will be handled by the App struct
                     self.messages.push(format!("[CHAT] {}: {}", player_name, message));
+                }
+                ServerMessage::ChunkData { chunks } => {
+                    // Handle received chunk data from server
+                    for chunk in chunks {
+                        let mut chunk_tiles = HashMap::new();
+                        for (local_coord_str, tile) in chunk.tiles {
+                            if let Ok(coords) = parse_local_coords(&local_coord_str) {
+                                chunk_tiles.insert(coords, tile);
+                            }
+                        }
+                        self.multiplayer_chunks.insert((chunk.chunk_x, chunk.chunk_y), chunk_tiles);
+                    }
                 }
             }
         }
@@ -56,27 +80,27 @@ impl NetworkClient {
     }
 
     pub fn send_move(&self, dx: i32, dy: i32) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::Move { dx, dy });
+        let _ = self.sender.send(ClientMessage::Move { dx, dy });
     }
 
     pub fn send_enter_dungeon(&self) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::EnterDungeon);
+        let _ = self.sender.send(ClientMessage::EnterDungeon);
     }
 
     pub fn send_exit_dungeon(&self) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::ExitDungeon);
+        let _ = self.sender.send(ClientMessage::ExitDungeon);
     }
 
     pub fn send_open_inventory(&self) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::OpenInventory);
+        let _ = self.sender.send(ClientMessage::OpenInventory);
     }
 
     pub fn send_close_inventory(&self) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::CloseInventory);
+        let _ = self.sender.send(ClientMessage::CloseInventory);
     }
 
     pub fn send_chat_message(&self, message: String) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::Chat { message });
+        let _ = self.sender.send(ClientMessage::Chat { message });
     }
 
     pub fn send_open_chat(&self) {
@@ -88,7 +112,11 @@ impl NetworkClient {
     }
 
     pub fn disconnect(&self) {
-        let _ = self.sender.send(crate::protocol::ClientMessage::Disconnect);
+        let _ = self.sender.send(ClientMessage::Disconnect);
+    }
+
+    pub fn request_chunks(&self, chunks: Vec<(i32, i32)>) {
+        let _ = self.sender.send(ClientMessage::RequestChunks { chunks });
     }
 }
 
@@ -98,6 +126,7 @@ pub struct App {
     pub player: rust_cli_roguelike::common::game_logic::Player,
     pub game_map: rust_cli_roguelike::common::game_logic::GameMap,
     pub chunk_manager: Option<GameChunkManager>, // For infinite terrain in single player
+    pub multiplayer_chunks: HashMap<(i32, i32), HashMap<(i32, i32), Tile>>, // For multiplayer chunk storage
     pub messages: Vec<String>,
     pub turn_count: u32,
     pub current_map_type: rust_cli_roguelike::common::protocol::MapType,
@@ -153,6 +182,7 @@ impl App {
                 tiles: HashMap::new(),
             },
             chunk_manager: None,
+            multiplayer_chunks: HashMap::new(),
             messages: vec!["Welcome! Select game mode from the menu.".to_string()],
             turn_count: 0,
             current_map_type: MapType::Overworld,
@@ -237,8 +267,8 @@ impl App {
     }
 
     fn update_from_network_state(&mut self, state: &GameState) {
-        // Update game map using shared logic
-        self.game_map = GameLogic::network_map_to_game(&state.game_map);
+        // Note: In the new chunk-based system, game map data comes via ChunkData messages
+        // The GameState only contains player data and game metadata
         
         self.current_map_type = state.current_map_type;
         self.turn_count = state.turn_count;
@@ -278,9 +308,13 @@ impl App {
                 let new_x = self.player.x + dx;
                 let new_y = self.player.y + dy;
                 
-                // Check if the move is valid locally first
-                if let Some(tile) = self.game_map.tiles.get(&(new_x, new_y)) {
-                    if GameLogic::is_movement_valid(*tile) {
+                // Check if the move is valid using multiplayer chunks first, then traditional map
+                let tile = self.get_multiplayer_tile(new_x, new_y).or_else(|| 
+                    self.game_map.tiles.get(&(new_x, new_y)).copied()
+                );
+                
+                if let Some(tile) = tile {
+                    if GameLogic::is_movement_valid(tile) {
                         // Update local position immediately for responsive feel
                         self.player.x = new_x;
                         self.player.y = new_y;
@@ -290,14 +324,20 @@ impl App {
                         if let Some(ref client) = self.network_client {
                             client.send_move(dx, dy);
                         }
+                        
+                        // Request chunks around new position if needed
+                        self.request_chunks_around_player();
                     } else {
-                        self.messages.push(GameLogic::get_blocked_movement_message(*tile));
+                        self.messages.push(GameLogic::get_blocked_movement_message(tile));
                     }
                 } else {
                     // Send move anyway in case server has different map state
                     if let Some(ref client) = self.network_client {
                         client.send_move(dx, dy);
                     }
+                    
+                    // Request chunks around new position
+                    self.request_chunks_around_player();
                 }
             }
         }
@@ -473,6 +513,52 @@ impl App {
         self.network_client = None;
         self.current_screen = CurrentScreen::MainMenu;
         self.main_menu_state = MainMenuState::new();
+    }
+
+    /// Get tile from multiplayer chunks (for chunk-based multiplayer terrain)
+    pub fn get_multiplayer_tile(&self, x: i32, y: i32) -> Option<Tile> {
+        if let Some(ref client) = self.network_client {
+            // Calculate which chunk this position belongs to
+            let chunk_x = if x >= 0 { x / 32 } else { (x - 31) / 32 };
+            let chunk_y = if y >= 0 { y / 32 } else { (y - 31) / 32 };
+            
+            // Get local coordinates within the chunk
+            let local_x = x - chunk_x * 32;
+            let local_y = y - chunk_y * 32;
+            
+            // Check if we have this chunk
+            if let Some(chunk_tiles) = client.multiplayer_chunks.get(&(chunk_x, chunk_y)) {
+                return chunk_tiles.get(&(local_x, local_y)).copied();
+            }
+        }
+        None
+    }
+
+    /// Request chunks around the player position from the server
+    fn request_chunks_around_player(&mut self) {
+        if let Some(ref client) = self.network_client {
+            let player_chunk_x = if self.player.x >= 0 { self.player.x / 32 } else { (self.player.x - 31) / 32 };
+            let player_chunk_y = if self.player.y >= 0 { self.player.y / 32 } else { (self.player.y - 31) / 32 };
+            
+            let mut chunks_to_request = Vec::new();
+            
+            // Request 3x3 grid of chunks around player
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let chunk_x = player_chunk_x + dx;
+                    let chunk_y = player_chunk_y + dy;
+                    
+                    // Only request if we don't already have this chunk
+                    if !client.multiplayer_chunks.contains_key(&(chunk_x, chunk_y)) {
+                        chunks_to_request.push((chunk_x, chunk_y));
+                    }
+                }
+            }
+            
+            if !chunks_to_request.is_empty() {
+                client.request_chunks(chunks_to_request);
+            }
+        }
     }
 }
 

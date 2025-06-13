@@ -7,10 +7,11 @@ use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
 use rust_cli_roguelike::common::protocol::{
-    ClientMessage, ServerMessage, GameState, NetworkPlayer, NetworkGameMap,
+    ClientMessage, ServerMessage, GameState, NetworkPlayer, ChunkData,
     NetworkCurrentScreen, PlayerId, MapType
 };
-use rust_cli_roguelike::common::game_logic::{GameLogic, Tile};
+use rust_cli_roguelike::common::game_logic::{GameLogic, Tile, GameChunkManager};
+use rust_cli_roguelike::common::chunk::CHUNK_SIZE;
 
 type SharedGameState = Arc<Mutex<ServerGameState>>;
 type ClientSender = mpsc::UnboundedSender<ServerMessage>;
@@ -19,7 +20,7 @@ type ClientReceiver = mpsc::UnboundedReceiver<ServerMessage>;
 #[derive(Debug)]
 struct ServerGameState {
     players: HashMap<PlayerId, NetworkPlayer>,
-    game_map: NetworkGameMap,
+    chunk_manager: GameChunkManager,
     current_map_type: MapType,
     turn_count: u32,
     client_senders: HashMap<PlayerId, ClientSender>,
@@ -27,12 +28,13 @@ struct ServerGameState {
 
 impl ServerGameState {
     fn new() -> Self {
-        let overworld = GameLogic::generate_overworld_map();
-        let game_map = GameLogic::game_map_to_network(&overworld);
+        // Create chunk manager with a fixed seed for consistent multiplayer worlds
+        let seed = 12345; // Fixed seed ensures all players see the same world
+        let chunk_manager = GameLogic::create_chunk_manager(seed);
 
         Self {
             players: HashMap::new(),
-            game_map,
+            chunk_manager,
             current_map_type: MapType::Overworld,
             turn_count: 0,
             client_senders: HashMap::new(),
@@ -79,15 +81,18 @@ impl ServerGameState {
             let new_x = player.x + dx;
             let new_y = player.y + dy;
 
-            // Check if the new position is valid
-            if let Some(tile) = self.game_map.get_tile(new_x, new_y) {
-                if GameLogic::is_movement_valid(*tile) {
+            // Update chunk manager with player position
+            self.chunk_manager.update_player_position(new_x, new_y);
+
+            // Check if the new position is valid using chunk manager
+            if let Some(tile) = self.chunk_manager.get_tile(new_x, new_y) {
+                if GameLogic::is_movement_valid(tile) {
                     player.x = new_x;
                     player.y = new_y;
                     self.turn_count += 1;
 
                     // Handle special tile interactions - send personalized messages to player
-                    if let Some(interaction_message) = GameLogic::get_tile_interaction_message(*tile) {
+                    if let Some(interaction_message) = GameLogic::get_tile_interaction_message(tile) {
                         let msg = ServerMessage::Message {
                             text: interaction_message,
                         };
@@ -98,7 +103,7 @@ impl ServerGameState {
                     }
                     
                     // Handle special multiplayer tile interactions - broadcast to all players
-                    if *tile == Tile::Village {
+                    if tile == Tile::Village {
                         let player_name = player.name.clone();
                         let msg = ServerMessage::Message {
                             text: format!("{} visits the village.", player_name),
@@ -118,10 +123,25 @@ impl ServerGameState {
                     self.broadcast_game_state();
                     Ok(())
                 } else {
-                    Err(GameLogic::get_blocked_movement_message(*tile))
+                    Err(GameLogic::get_blocked_movement_message(tile))
                 }
             } else {
-                Err("Invalid position.".to_string())
+                // No tile found - allow movement in infinite terrain (generate on demand)
+                player.x = new_x;
+                player.y = new_y;
+                self.turn_count += 1;
+
+                // Notify all players about the movement
+                let move_message = ServerMessage::PlayerMoved {
+                    player_id: player_id.clone(),
+                    x: new_x,
+                    y: new_y,
+                };
+                self.broadcast_to_all(move_message);
+
+                // Send updated game state
+                self.broadcast_game_state();
+                Ok(())
             }
         } else {
             Err("Player not found.".to_string())
@@ -130,18 +150,14 @@ impl ServerGameState {
 
     fn enter_dungeon(&mut self, player_id: &PlayerId) -> Result<(), String> {
         if let Some(player) = self.players.get(player_id) {
-            if GameLogic::is_at_network_dungeon_entrance(&self.game_map, player.x, player.y) {
-                // Generate a new dungeon map using shared logic
-                let dungeon = GameLogic::generate_dungeon_map();
-                self.game_map = GameLogic::game_map_to_network(&dungeon);
-                self.current_map_type = MapType::Dungeon;
-
+            if GameLogic::is_at_chunk_dungeon_entrance(&mut self.chunk_manager, player.x, player.y) {
                 // Move all players to dungeon start
                 let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
                 for player in self.players.values_mut() {
                     player.x = spawn_x;
                     player.y = spawn_y;
                 }
+                self.current_map_type = MapType::Dungeon;
 
                 self.broadcast_game_state();
                 let msg = ServerMessage::Message {
@@ -159,9 +175,6 @@ impl ServerGameState {
 
     fn exit_dungeon(&mut self, _player_id: &PlayerId) -> Result<(), String> {
         if self.current_map_type == MapType::Dungeon {
-            // Generate overworld using shared logic
-            let overworld = GameLogic::generate_overworld_map();
-            self.game_map = GameLogic::game_map_to_network(&overworld);
             self.current_map_type = MapType::Overworld;
 
             // Move all players back to overworld
@@ -222,12 +235,44 @@ impl ServerGameState {
     fn broadcast_game_state(&self) {
         let game_state = GameState {
             players: self.players.clone(),
-            game_map: self.game_map.clone(),
             current_map_type: self.current_map_type,
             turn_count: self.turn_count,
         };
 
         self.broadcast_to_all(ServerMessage::GameState { state: game_state });
+    }
+
+    fn handle_chunk_request(&mut self, player_id: &PlayerId, chunk_coords: Vec<(i32, i32)>) {
+        let mut chunk_data = Vec::new();
+        
+        for (chunk_x, chunk_y) in chunk_coords {
+            // Get all tiles in this chunk from the chunk manager
+            let chunk_start_x = chunk_x * CHUNK_SIZE;
+            let chunk_start_y = chunk_y * CHUNK_SIZE;
+            let chunk_end_x = chunk_start_x + CHUNK_SIZE - 1;
+            let chunk_end_y = chunk_start_y + CHUNK_SIZE - 1;
+            
+            let tiles_in_chunk = self.chunk_manager.get_tiles_in_area(
+                chunk_start_x, chunk_start_y, chunk_end_x, chunk_end_y
+            );
+            
+            // Convert world coordinates to local chunk coordinates
+            let mut chunk_tiles = std::collections::HashMap::new();
+            for ((world_x, world_y), tile) in tiles_in_chunk {
+                let local_x = world_x - chunk_start_x;
+                let local_y = world_y - chunk_start_y;
+                chunk_tiles.insert(format!("{},{}", local_x, local_y), tile);
+            }
+            
+            chunk_data.push(ChunkData {
+                chunk_x,
+                chunk_y,
+                tiles: chunk_tiles,
+            });
+        }
+        
+        // Send chunk data to the requesting player
+        self.send_to_player(player_id, ServerMessage::ChunkData { chunks: chunk_data });
     }
 }
 
@@ -297,6 +342,9 @@ async fn handle_client(stream: TcpStream, game_state: SharedGameState) {
                                     });
                                 }
                             }
+                        }
+                        ClientMessage::RequestChunks { chunks } => {
+                            state.handle_chunk_request(&player_id, chunks);
                         }
                         ClientMessage::EnterDungeon => {
                             match state.enter_dungeon(&player_id) {
