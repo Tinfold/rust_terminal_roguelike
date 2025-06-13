@@ -1,8 +1,10 @@
 use std::collections::HashMap;
-use crate::app::{GameMap, Tile};
+use rust_cli_roguelike::common::game_logic::{GameMap, Tile};
 
+#[allow(dead_code)]
 pub struct TerrainGenerator;
 
+#[allow(dead_code)]
 impl TerrainGenerator {
     pub fn generate_overworld(width: i32, height: i32) -> GameMap {
         let mut game_map = GameMap {

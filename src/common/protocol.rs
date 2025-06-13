@@ -1,7 +1,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use super::game_logic::Tile;
 
 pub type PlayerId = String;
+
+// Define the enums that both client and server need
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MapType {
+    Overworld,
+    Dungeon,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CurrentScreen {
+    MainMenu,
+    Game,
+    Inventory,
+    Chat,
+    Exiting,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -31,7 +48,7 @@ pub enum ServerMessage {
 pub struct GameState {
     pub players: HashMap<PlayerId, NetworkPlayer>,
     pub game_map: NetworkGameMap,
-    pub current_map_type: crate::app::MapType,
+    pub current_map_type: MapType,
     pub turn_count: u32,
 }
 
@@ -51,7 +68,7 @@ pub struct NetworkPlayer {
 pub struct NetworkGameMap {
     pub width: i32,
     pub height: i32,
-    pub tiles: HashMap<String, crate::app::Tile>, // Using Tile directly now
+    pub tiles: HashMap<String, Tile>, // Using Tile directly now
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,25 +79,25 @@ pub enum NetworkCurrentScreen {
     Exiting,
 }
 
-impl From<crate::app::CurrentScreen> for NetworkCurrentScreen {
-    fn from(screen: crate::app::CurrentScreen) -> Self {
+impl From<CurrentScreen> for NetworkCurrentScreen {
+    fn from(screen: CurrentScreen) -> Self {
         match screen {
-            crate::app::CurrentScreen::MainMenu => NetworkCurrentScreen::Game, // Map MainMenu to Game for network
-            crate::app::CurrentScreen::Game => NetworkCurrentScreen::Game,
-            crate::app::CurrentScreen::Inventory => NetworkCurrentScreen::Inventory,
-            crate::app::CurrentScreen::Chat => NetworkCurrentScreen::Chat,
-            crate::app::CurrentScreen::Exiting => NetworkCurrentScreen::Exiting,
+            CurrentScreen::MainMenu => NetworkCurrentScreen::Game, // Map MainMenu to Game for network
+            CurrentScreen::Game => NetworkCurrentScreen::Game,
+            CurrentScreen::Inventory => NetworkCurrentScreen::Inventory,
+            CurrentScreen::Chat => NetworkCurrentScreen::Chat,
+            CurrentScreen::Exiting => NetworkCurrentScreen::Exiting,
         }
     }
 }
 
-impl From<NetworkCurrentScreen> for crate::app::CurrentScreen {
+impl From<NetworkCurrentScreen> for CurrentScreen {
     fn from(screen: NetworkCurrentScreen) -> Self {
         match screen {
-            NetworkCurrentScreen::Game => crate::app::CurrentScreen::Game,
-            NetworkCurrentScreen::Inventory => crate::app::CurrentScreen::Inventory,
-            NetworkCurrentScreen::Chat => crate::app::CurrentScreen::Chat,
-            NetworkCurrentScreen::Exiting => crate::app::CurrentScreen::Exiting,
+            NetworkCurrentScreen::Game => CurrentScreen::Game,
+            NetworkCurrentScreen::Inventory => CurrentScreen::Inventory,
+            NetworkCurrentScreen::Chat => CurrentScreen::Chat,
+            NetworkCurrentScreen::Exiting => CurrentScreen::Exiting,
         }
     }
 }
@@ -101,7 +118,7 @@ pub fn string_to_coord(s: &str) -> Option<(i32, i32)> {
 }
 
 impl NetworkGameMap {
-    pub fn get_tile(&self, x: i32, y: i32) -> Option<&crate::app::Tile> {
+    pub fn get_tile(&self, x: i32, y: i32) -> Option<&Tile> {
         self.tiles.get(&coord_to_string(x, y))
     }
 }

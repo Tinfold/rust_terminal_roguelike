@@ -6,19 +6,11 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
 use uuid::Uuid;
 
-mod app;
-mod terrain;
-mod protocol;
-mod game_logic;
-mod network_utils;
-mod constants;
-
-use protocol::{
+use rust_cli_roguelike::common::protocol::{
     ClientMessage, ServerMessage, GameState, NetworkPlayer, NetworkGameMap,
-    NetworkCurrentScreen, PlayerId
+    NetworkCurrentScreen, PlayerId, MapType
 };
-use game_logic::GameLogic;
-use crate::app::Tile;
+use rust_cli_roguelike::common::game_logic::{GameLogic, Tile};
 
 type SharedGameState = Arc<Mutex<ServerGameState>>;
 type ClientSender = mpsc::UnboundedSender<ServerMessage>;
@@ -28,7 +20,7 @@ type ClientReceiver = mpsc::UnboundedReceiver<ServerMessage>;
 struct ServerGameState {
     players: HashMap<PlayerId, NetworkPlayer>,
     game_map: NetworkGameMap,
-    current_map_type: crate::app::MapType,
+    current_map_type: MapType,
     turn_count: u32,
     client_senders: HashMap<PlayerId, ClientSender>,
 }
@@ -41,7 +33,7 @@ impl ServerGameState {
         Self {
             players: HashMap::new(),
             game_map,
-            current_map_type: crate::app::MapType::Overworld,
+            current_map_type: MapType::Overworld,
             turn_count: 0,
             client_senders: HashMap::new(),
         }
@@ -142,7 +134,7 @@ impl ServerGameState {
                 // Generate a new dungeon map using shared logic
                 let dungeon = GameLogic::generate_dungeon_map();
                 self.game_map = GameLogic::game_map_to_network(&dungeon);
-                self.current_map_type = crate::app::MapType::Dungeon;
+                self.current_map_type = MapType::Dungeon;
 
                 // Move all players to dungeon start
                 let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
@@ -166,11 +158,11 @@ impl ServerGameState {
     }
 
     fn exit_dungeon(&mut self, _player_id: &PlayerId) -> Result<(), String> {
-        if self.current_map_type == crate::app::MapType::Dungeon {
+        if self.current_map_type == MapType::Dungeon {
             // Generate overworld using shared logic
             let overworld = GameLogic::generate_overworld_map();
             self.game_map = GameLogic::game_map_to_network(&overworld);
-            self.current_map_type = crate::app::MapType::Overworld;
+            self.current_map_type = MapType::Overworld;
 
             // Move all players back to overworld
             let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();

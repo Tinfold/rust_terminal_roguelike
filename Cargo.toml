@@ -1,16 +1,16 @@
 [package]
 name = "rust_cli_roguelike"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 default-run = "client"
 
 [[bin]]
 name = "client"
-path = "src/main.rs"
+path = "src/client/main.rs"
 
 [[bin]]
 name = "server"
-path = "src/server.rs"
+path = "src/server/main.rs"
 
 [dependencies]
 ratatui = "0.29.0"

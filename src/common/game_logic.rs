@@ -1,9 +1,39 @@
 // Shared game logic to reduce duplication between client and server
 use std::collections::HashMap;
-use crate::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
-use crate::app::{GameMap, Tile};
-use crate::terrain::TerrainGenerator;
-use crate::constants::GameConstants;
+use super::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
+use super::constants::GameConstants;
+
+// Re-export common types that both client and server need
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Tile {
+    Floor,
+    Wall,
+    Empty,
+    // Overworld tiles
+    Grass,
+    Tree,
+    Mountain,
+    Water,
+    Road,
+    Village,
+    DungeonEntrance,
+}
+
+#[derive(Debug, Clone)]
+pub struct GameMap {
+    pub width: i32,
+    pub height: i32,
+    pub tiles: HashMap<(i32, i32), Tile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Player {
+    pub x: i32,
+    pub y: i32,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub symbol: char,
+}
 
 pub struct GameLogic;
 
@@ -68,12 +98,52 @@ impl GameLogic {
 
     /// Common logic for entering a dungeon - generates the dungeon map
     pub fn generate_dungeon_map() -> GameMap {
-        TerrainGenerator::generate_dungeon(GameConstants::DUNGEON_WIDTH, GameConstants::DUNGEON_HEIGHT)
+        // For now, create a simple empty dungeon map
+        // In a full implementation, this would call TerrainGenerator from the client
+        let mut tiles = HashMap::new();
+        let width = GameConstants::DUNGEON_WIDTH;
+        let height = GameConstants::DUNGEON_HEIGHT;
+        
+        // Create a simple dungeon layout
+        for x in 0..width {
+            for y in 0..height {
+                let tile = if x == 0 || x == width - 1 || y == 0 || y == height - 1 {
+                    Tile::Wall
+                } else {
+                    Tile::Floor
+                };
+                tiles.insert((x, y), tile);
+            }
+        }
+        
+        GameMap { width, height, tiles }
     }
 
     /// Common logic for exiting to overworld - generates the overworld map
     pub fn generate_overworld_map() -> GameMap {
-        TerrainGenerator::generate_overworld(GameConstants::OVERWORLD_WIDTH, GameConstants::OVERWORLD_HEIGHT)
+        // For now, create a simple overworld map
+        // In a full implementation, this would call TerrainGenerator from the client
+        let mut tiles = HashMap::new();
+        let width = GameConstants::OVERWORLD_WIDTH;
+        let height = GameConstants::OVERWORLD_HEIGHT;
+        
+        // Create a simple overworld layout
+        for x in 0..width {
+            for y in 0..height {
+                let tile = if x % 10 == 0 && y % 10 == 0 {
+                    Tile::DungeonEntrance
+                } else if (x + y) % 7 == 0 {
+                    Tile::Tree
+                } else if (x + y) % 13 == 0 {
+                    Tile::Village
+                } else {
+                    Tile::Grass
+                };
+                tiles.insert((x, y), tile);
+            }
+        }
+        
+        GameMap { width, height, tiles }
     }
 
     /// Get default dungeon spawn position
@@ -112,8 +182,8 @@ pub trait PlayerOperations {
     fn set_hp(&mut self, hp: i32);
 }
 
-// Implement for client Player
-impl PlayerOperations for crate::app::Player {
+// Implement for common Player
+impl PlayerOperations for Player {
     fn get_position(&self) -> (i32, i32) {
         (self.x, self.y)
     }
@@ -132,8 +202,8 @@ impl PlayerOperations for crate::app::Player {
     }
 }
 
-// Implement for server NetworkPlayer
-impl PlayerOperations for crate::protocol::NetworkPlayer {
+// Implement for NetworkPlayer
+impl PlayerOperations for super::protocol::NetworkPlayer {
     fn get_position(&self) -> (i32, i32) {
         (self.x, self.y)
     }

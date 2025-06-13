@@ -1,11 +1,15 @@
 use std::collections::HashMap;
-use crate::protocol::{GameState, NetworkPlayer, PlayerId};
-use crate::game_logic::GameLogic;
+use rust_cli_roguelike::common::protocol::{GameState, NetworkPlayer, PlayerId, ClientMessage, ServerMessage};
+use rust_cli_roguelike::common::game_logic::GameLogic;
+
+// Re-export common types for use by other client modules
+pub use rust_cli_roguelike::common::protocol::{CurrentScreen, MapType};
+pub use rust_cli_roguelike::common::game_logic::{Tile, GameMap, Player};
 
 // Forward declaration - the actual NetworkClient is defined in network.rs
 pub struct NetworkClient {
-    pub sender: tokio::sync::mpsc::UnboundedSender<crate::protocol::ClientMessage>,
-    pub receiver: tokio::sync::mpsc::UnboundedReceiver<crate::protocol::ServerMessage>,
+    pub sender: tokio::sync::mpsc::UnboundedSender<ClientMessage>,
+    pub receiver: tokio::sync::mpsc::UnboundedReceiver<ServerMessage>,
     pub player_id: Option<PlayerId>,
     pub game_state: Option<GameState>,
     pub messages: Vec<String>,
@@ -89,13 +93,13 @@ impl NetworkClient {
 }
 
 pub struct App {
-    pub current_screen: CurrentScreen,
+    pub current_screen: rust_cli_roguelike::common::protocol::CurrentScreen,
     pub should_quit: bool,
-    pub player: Player,
-    pub game_map: GameMap,
+    pub player: rust_cli_roguelike::common::game_logic::Player,
+    pub game_map: rust_cli_roguelike::common::game_logic::GameMap,
     pub messages: Vec<String>,
     pub turn_count: u32,
-    pub current_map_type: MapType,
+    pub current_map_type: rust_cli_roguelike::common::protocol::MapType,
     pub game_mode: GameMode,
     pub network_client: Option<NetworkClient>,
     pub other_players: HashMap<PlayerId, NetworkPlayer>,
@@ -105,15 +109,6 @@ pub struct App {
     // Chat functionality
     pub chat_messages: Vec<(String, String)>, // (player_name, message)
     pub chat_input: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum CurrentScreen {
-    MainMenu,
-    Game,
-    Inventory,
-    Chat,
-    Exiting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,43 +132,6 @@ impl MainMenuState {
             connection_error: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum MapType {
-    Overworld,
-    Dungeon,
-}
-
-#[derive(Debug, Clone)]
-pub struct Player {
-    pub x: i32,
-    pub y: i32,
-    pub hp: i32,
-    pub max_hp: i32,
-    pub symbol: char,
-}
-
-#[derive(Debug, Clone)]
-pub struct GameMap {
-    pub width: i32,
-    pub height: i32,
-    pub tiles: HashMap<(i32, i32), Tile>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum Tile {
-    Floor,
-    Wall,
-    Empty,
-    // Overworld tiles
-    Grass,
-    Tree,
-    Mountain,
-    Water,
-    Road,
-    Village,
-    DungeonEntrance,
 }
 
 impl App {
