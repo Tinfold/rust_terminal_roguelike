@@ -64,6 +64,7 @@ pub struct NetworkPlayer {
     pub max_hp: i32,
     pub symbol: char,
     pub current_screen: NetworkCurrentScreen,
+    pub color: (u8, u8, u8), // RGB color tuple for this player
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

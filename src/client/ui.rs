@@ -37,29 +37,54 @@ fn render_main_menu(frame: &mut Frame, app: &App) {
     frame.render_widget(title, chunks[0]);
 
     // Menu options
-    let menu_items = vec![
-        "Single Player",
-        "Multiplayer",
-        "Quit",
-    ];
+    let menu_items = if app.main_menu_state.username_input_mode {
+        vec!["[Press Enter to confirm, Esc to cancel]"]
+    } else {
+        vec![
+            "Single Player",
+            "Multiplayer", 
+            "Set Username",
+            "Quit",
+        ]
+    };
 
     let mut menu_list_items = Vec::<ListItem>::new();
-    for (i, item) in menu_items.iter().enumerate() {
-        let style = if i == app.main_menu_state.selected_option {
-            Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        
-        let prefix = if i == app.main_menu_state.selected_option { "▶ " } else { "  " };
+    
+    if app.main_menu_state.username_input_mode {
+        // Username input mode
         menu_list_items.push(ListItem::new(Line::from(Span::styled(
-            format!("{}{}", prefix, item),
-            style,
+            format!("Username: {}", app.main_menu_state.username_input),
+            Style::default().fg(Color::Yellow),
         ))));
+        menu_list_items.push(ListItem::new(Line::from(Span::styled(
+            "[Press Enter to confirm, Esc to cancel]",
+            Style::default().fg(Color::Gray),
+        ))));
+    } else {
+        // Normal menu
+        for (i, item) in menu_items.iter().enumerate() {
+            let style = if i == app.main_menu_state.selected_option {
+                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            
+            let prefix = if i == app.main_menu_state.selected_option { "▶ " } else { "  " };
+            menu_list_items.push(ListItem::new(Line::from(Span::styled(
+                format!("{}{}", prefix, item),
+                style,
+            ))));
+        }
     }
 
     let menu_list = List::new(menu_list_items)
-        .block(Block::default().borders(Borders::ALL).title("Select Option (↑/↓ to select, Enter to confirm)"));
+        .block(Block::default().borders(Borders::ALL).title(
+            if app.main_menu_state.username_input_mode {
+                "Enter Username"
+            } else {
+                "Select Option (↑/↓ to select, Enter to confirm)"
+            }
+        ));
 
     frame.render_widget(menu_list, chunks[1]);
 
@@ -254,11 +279,12 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                         .bg(Color::DarkGray)
                 ));
             } else if let Some(other_player) = app.other_players.values().find(|p| p.x == world_x && p.y == world_y) {
-                // Other players in multiplayer mode
+                // Other players in multiplayer mode - use their assigned color
+                let player_color = Color::Rgb(other_player.color.0, other_player.color.1, other_player.color.2);
                 spans.push(Span::styled(
                     other_player.symbol.to_string(),
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(player_color)
                         .bg(Color::DarkGray)
                 ));
             } else {
@@ -349,13 +375,20 @@ fn render_chat_screen(frame: &mut Frame, app: &mut App) {
         
         for (i, line) in wrapped_lines.iter().enumerate() {
             if i == 0 {
-                // First line: show player name in cyan, message in white
+                // First line: show player name in their assigned color, message in white
                 let name_end = player_name.len() + 2; // +2 for ": "
+                
+                // Find the player's color from other_players or use default
+                let player_color = app.other_players.values()
+                    .find(|p| p.name == *player_name)
+                    .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
+                    .unwrap_or(Color::Cyan);
+                
                 if line.len() > name_end {
                     chat_lines.push(Line::from(vec![
                         Span::styled(
                             format!("{}: ", player_name),
-                            Style::default().fg(Color::Cyan),
+                            Style::default().fg(player_color),
                         ),
                         Span::styled(
                             line[name_end..].to_string(),
@@ -365,7 +398,7 @@ fn render_chat_screen(frame: &mut Frame, app: &mut App) {
                 } else {
                     chat_lines.push(Line::from(Span::styled(
                         line.clone(),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(player_color),
                     )));
                 }
             } else {
@@ -435,13 +468,20 @@ fn render_chat_widget(frame: &mut Frame, app: &App, area: Rect) {
     for (player_name, wrapped_lines) in all_messages.iter().rev() {
         for (i, line) in wrapped_lines.iter().enumerate() {
             if i == 0 {
-                // First line: show player name in cyan, message in white
+                // First line: show player name in their assigned color, message in white
                 let name_end = player_name.len() + 2; // +2 for ": "
+                
+                // Find the player's color from other_players or use default
+                let player_color = app.other_players.values()
+                    .find(|p| p.name == *player_name)
+                    .map(|p| Color::Rgb(p.color.0, p.color.1, p.color.2))
+                    .unwrap_or(Color::Cyan);
+                
                 if line.len() > name_end {
                     chat_lines.push(Line::from(vec![
                         Span::styled(
                             format!("{}: ", player_name),
-                            Style::default().fg(Color::Cyan),
+                            Style::default().fg(player_color),
                         ),
                         Span::styled(
                             line[name_end..].to_string(),
@@ -451,7 +491,7 @@ fn render_chat_widget(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     chat_lines.push(Line::from(Span::styled(
                         line.clone(),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(player_color),
                     )));
                 }
             } else {

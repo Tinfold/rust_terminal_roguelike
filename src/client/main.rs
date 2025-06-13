@@ -78,47 +78,73 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> io::Re
                 if let Event::Key(key) = event::read()? {
                     if key.kind == ratatui::crossterm::event::KeyEventKind::Press {
                         match app.current_screen {
-                            CurrentScreen::MainMenu => match key.code {
-                                KeyCode::Up => {
-                                    if app.main_menu_state.selected_option > 0 {
-                                        app.main_menu_state.selected_option -= 1;
-                                    }
-                                }
-                                KeyCode::Down => {
-                                    if app.main_menu_state.selected_option < 2 {
-                                        app.main_menu_state.selected_option += 1;
-                                    }
-                                }
-                                KeyCode::Enter => {
-                                    match app.main_menu_state.selected_option {
-                                        0 => {
-                                            // Single Player
-                                            app.start_single_player();
+                            CurrentScreen::MainMenu => {
+                                if app.main_menu_state.username_input_mode {
+                                    // Handle username input
+                                    match key.code {
+                                        KeyCode::Enter => {
+                                            app.finish_username_input();
                                         }
-                                        1 => {
-                                            // Multiplayer - try to connect
-                                            app.main_menu_state.connecting = true;
-                                            match NetworkClient::connect(&app.server_address, app.player_name.clone()).await {
-                                                Ok(client) => {
-                                                    app.start_multiplayer(client);
-                                                }
-                                                Err(e) => {
-                                                    app.main_menu_state.connecting = false;
-                                                    app.main_menu_state.connection_error = Some(format!("Failed to connect: {}", e));
-                                                }
+                                        KeyCode::Esc => {
+                                            app.cancel_username_input();
+                                        }
+                                        KeyCode::Backspace => {
+                                            app.remove_char_from_username();
+                                        }
+                                        KeyCode::Char(c) => {
+                                            app.add_char_to_username(c);
+                                        }
+                                        _ => {}
+                                    }
+                                } else {
+                                    // Handle menu navigation
+                                    match key.code {
+                                        KeyCode::Up => {
+                                            if app.main_menu_state.selected_option > 0 {
+                                                app.main_menu_state.selected_option -= 1;
                                             }
                                         }
-                                        2 => {
-                                            // Quit
+                                        KeyCode::Down => {
+                                            if app.main_menu_state.selected_option < 3 { // Updated for 4 options
+                                                app.main_menu_state.selected_option += 1;
+                                            }
+                                        }
+                                        KeyCode::Enter => {
+                                            match app.main_menu_state.selected_option {
+                                                0 => {
+                                                    // Single Player
+                                                    app.start_single_player();
+                                                }
+                                                1 => {
+                                                    // Multiplayer - try to connect
+                                                    app.main_menu_state.connecting = true;
+                                                    match NetworkClient::connect(&app.server_address, app.player_name.clone()).await {
+                                                        Ok(client) => {
+                                                            app.start_multiplayer(client);
+                                                        }
+                                                        Err(e) => {
+                                                            app.main_menu_state.connecting = false;
+                                                            app.main_menu_state.connection_error = Some(format!("Failed to connect: {}", e));
+                                                        }
+                                                    }
+                                                }
+                                                2 => {
+                                                    // Set Username
+                                                    app.start_username_input();
+                                                }
+                                                3 => {
+                                                    // Quit
+                                                    app.should_quit = true;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        KeyCode::Char('q') => {
                                             app.should_quit = true;
                                         }
                                         _ => {}
                                     }
                                 }
-                                KeyCode::Char('q') => {
-                                    app.should_quit = true;
-                                }
-                                _ => {}
                             },
                             CurrentScreen::Game => {
                                 if app.chat_input_mode {

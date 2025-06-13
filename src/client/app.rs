@@ -153,6 +153,8 @@ pub struct MainMenuState {
     pub selected_option: usize,
     pub connecting: bool,
     pub connection_error: Option<String>,
+    pub username_input_mode: bool,
+    pub username_input: String,
 }
 
 impl MainMenuState {
@@ -161,6 +163,8 @@ impl MainMenuState {
             selected_option: 0,
             connecting: false,
             connection_error: None,
+            username_input_mode: false,
+            username_input: String::new(),
         }
     }
 }
@@ -507,6 +511,35 @@ impl App {
         self.network_client = None;
         self.current_screen = CurrentScreen::MainMenu;
         self.main_menu_state = MainMenuState::new();
+    }
+
+    // Username input methods
+    pub fn start_username_input(&mut self) {
+        self.main_menu_state.username_input_mode = true;
+        self.main_menu_state.username_input = self.player_name.clone();
+    }
+
+    pub fn finish_username_input(&mut self) {
+        if !self.main_menu_state.username_input.trim().is_empty() {
+            self.player_name = self.main_menu_state.username_input.trim().to_string();
+        }
+        self.main_menu_state.username_input_mode = false;
+        self.main_menu_state.username_input.clear();
+    }
+
+    pub fn cancel_username_input(&mut self) {
+        self.main_menu_state.username_input_mode = false;
+        self.main_menu_state.username_input.clear();
+    }
+
+    pub fn add_char_to_username(&mut self, c: char) {
+        if self.main_menu_state.username_input.len() < 20 { // Limit username length
+            self.main_menu_state.username_input.push(c);
+        }
+    }
+
+    pub fn remove_char_from_username(&mut self) {
+        self.main_menu_state.username_input.pop();
     }
 
     /// Get tile from multiplayer chunks (for chunk-based multiplayer terrain)

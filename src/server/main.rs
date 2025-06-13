@@ -17,6 +17,20 @@ type SharedGameState = Arc<Mutex<ServerGameState>>;
 type ClientSender = mpsc::UnboundedSender<ServerMessage>;
 type ClientReceiver = mpsc::UnboundedReceiver<ServerMessage>;
 
+// Player color palette - distinct colors for multiplayer
+const PLAYER_COLORS: [(u8, u8, u8); 10] = [
+    (255, 69, 0),   // Red-Orange
+    (50, 205, 50),  // Lime Green
+    (30, 144, 255), // Dodger Blue
+    (255, 20, 147), // Deep Pink
+    (255, 215, 0),  // Gold
+    (138, 43, 226), // Blue Violet
+    (0, 255, 255),  // Cyan
+    (255, 165, 0),  // Orange
+    (124, 252, 0),  // Lawn Green
+    (255, 105, 180),// Hot Pink
+];
+
 #[derive(Debug)]
 struct ServerGameState {
     players: HashMap<PlayerId, NetworkPlayer>,
@@ -43,6 +57,11 @@ impl ServerGameState {
 
     fn add_player(&mut self, player_id: PlayerId, player_name: String, sender: ClientSender) {
         let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
+        
+        // Assign a color based on the number of existing players
+        let color_index = self.players.len() % PLAYER_COLORS.len();
+        let color = PLAYER_COLORS[color_index];
+        
         let player = NetworkPlayer {
             id: player_id.clone(),
             name: player_name,
@@ -52,6 +71,7 @@ impl ServerGameState {
             max_hp: 20,
             symbol: '@',
             current_screen: NetworkCurrentScreen::Game,
+            color,
         };
 
         self.players.insert(player_id.clone(), player.clone());
