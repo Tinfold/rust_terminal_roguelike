@@ -25,6 +25,8 @@ pub struct GameMap {
     pub width: i32,
     pub height: i32,
     pub tiles: HashMap<(i32, i32), Tile>,
+    pub rooms: Vec<Room>, // Store room information for visibility tracking
+    pub room_positions: HashMap<(i32, i32), u32>, // Map positions to room IDs
 }
 
 pub struct TerrainGenerator;
@@ -35,6 +37,8 @@ impl TerrainGenerator {
             width,
             height,
             tiles: HashMap::new(),
+            rooms: Vec::new(),
+            room_positions: HashMap::new(),
         };
         
         // Create noise generators with different seeds for various terrain features
@@ -60,38 +64,6 @@ impl TerrainGenerator {
         
         // Add some villages and dungeon entrances
         Self::add_special_locations(&mut game_map);
-        
-        game_map
-    }
-    
-    pub fn generate_dungeon(width: i32, height: i32) -> GameMap {
-        let mut game_map = GameMap {
-            width,
-            height,
-            tiles: HashMap::new(),
-        };
-        
-        // Use a random seed based on current time for variety
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u32;
-        
-        // Use a new procedural dungeon generation system with rooms and corridors
-        Self::generate_procedural_dungeon(&mut game_map, seed);
-        
-        game_map
-    }
-
-    pub fn generate_dungeon_with_seed(width: i32, height: i32, seed: u32) -> GameMap {
-        let mut game_map = GameMap {
-            width,
-            height,
-            tiles: HashMap::new(),
-        };
-        
-        // Use a new procedural dungeon generation system with rooms and corridors
-        Self::generate_procedural_dungeon(&mut game_map, seed);
         
         game_map
     }
@@ -332,286 +304,13 @@ impl TerrainGenerator {
             }
         }
     }
-    
-    fn generate_cave_dungeon(game_map: &mut GameMap) {
-        // Initialize with random walls and floors
-        let wall_chance = 0.4;
-        let cave_noise = Perlin::new(123);
-        
-        for x in 0..game_map.width {
-            for y in 0..game_map.height {
-                // Always have walls on the border
-                let tile = if x == 0 || x == game_map.width - 1 || y == 0 || y == game_map.height - 1 {
-                    Tile::Wall
-                } else {
-                    // Use noise for initial cave generation
-                    let noise_val = cave_noise.get([x as f64 * 0.1, y as f64 * 0.1]);
-                    if noise_val < wall_chance * 2.0 - 1.0 {
-                        Tile::Wall
-                    } else {
-                        Tile::Floor
-                    }
-                };
-                
-                game_map.tiles.insert((x, y), tile);
-            }
-        }
-
-        // Apply cellular automata to create natural cave shapes
-        for _ in 0..4 { // 4 iterations of smoothing
-            let mut new_tiles = HashMap::new();
-            
-            for x in 0..game_map.width {
-                for y in 0..game_map.height {
-                    // Count neighboring walls
-                    let mut walls = 0;
-                    for nx in x-1..=x+1 {
-                        for ny in y-1..=y+1 {
-                            if nx == x && ny == y { continue; } // Skip center
-                            
-                            if let Some(tile) = game_map.tiles.get(&(nx, ny)) {
-                                if *tile == Tile::Wall {
-                                    walls += 1;
-                                }
-                            } else {
-                                walls += 1; // Treat out-of-bounds as walls
-                            }
-                        }
-                    }
-                    
-                    // Apply cellular automata rules
-                    let new_tile = if game_map.tiles.get(&(x, y)) == Some(&Tile::Wall) {
-                        if walls >= 4 { Tile::Wall } else { Tile::Floor }
-                    } else {
-                        if walls >= 5 { Tile::Wall } else { Tile::Floor }
-                    };
-                    
-                    // Always keep walls on the border
-                    if x == 0 || x == game_map.width - 1 || y == 0 || y == game_map.height - 1 {
-                        new_tiles.insert((x, y), Tile::Wall);
-                    } else {
-                        new_tiles.insert((x, y), new_tile);
-                    }
-                }
-            }
-            
-            // Update the game map with new tiles
-            game_map.tiles = new_tiles;
-        }
-    }
-
-    fn generate_procedural_dungeon(game_map: &mut GameMap, seed: u32) {
-        // Initialize entire dungeon with walls
-        for x in 0..game_map.width {
-            for y in 0..game_map.height {
-                game_map.tiles.insert((x, y), Tile::Wall);
-            }
-        }
-
-        // Define room generation parameters
-        let min_room_size = 4;
-        let max_room_size = 8;
-        let max_rooms = 8;
-        let mut rooms = Vec::new();
-        let mut rng_seed = seed; // Use the provided seed instead of fixed 42
-
-        // Generate a helper function for pseudo-random numbers
-        let mut next_random = || {
-            rng_seed = rng_seed.wrapping_mul(1103515245).wrapping_add(12345);
-            rng_seed
-        };
-
-        // Try to place rooms
-        for _ in 0..max_rooms {
-            let room_width = min_room_size + (next_random() % (max_room_size - min_room_size + 1) as u32) as i32;
-            let room_height = min_room_size + (next_random() % (max_room_size - min_room_size + 1) as u32) as i32;
-            
-            let room_x = 1 + (next_random() % (game_map.width - room_width - 2) as u32) as i32;
-            let room_y = 1 + (next_random() % (game_map.height - room_height - 2) as u32) as i32;
-            
-            let new_room = Room {
-                x: room_x,
-                y: room_y,
-                width: room_width,
-                height: room_height,
-            };
-
-            // Check if room overlaps with existing ones
-            let mut overlaps = false;
-            for existing_room in &rooms {
-                if Self::rooms_overlap(&new_room, existing_room) {
-                    overlaps = true;
-                    break;
-                }
-            }
-
-            if !overlaps {
-                // Create the room
-                Self::create_room(game_map, &new_room);
-                
-                // Connect to previous room with a corridor
-                if !rooms.is_empty() {
-                    let prev_room = &rooms[rooms.len() - 1];
-                    Self::create_corridor(game_map, 
-                        Self::room_center(&new_room), 
-                        Self::room_center(prev_room)
-                    );
-                }
-                
-                rooms.push(new_room);
-            }
-        }
-
-        // Ensure we have at least one room for spawning
-        if rooms.is_empty() {
-            let fallback_room = Room {
-                x: 2,
-                y: 2,
-                width: 6,
-                height: 4,
-            };
-            Self::create_room(game_map, &fallback_room);
-            rooms.push(fallback_room);
-        }
-
-        // Add doors to some rooms
-        Self::add_doors_to_rooms(game_map, &rooms, &mut next_random);
-
-        // Ensure spawn position is on a floor tile
-        Self::ensure_safe_spawn_position(game_map, &rooms);
-    }
-
-    fn rooms_overlap(room1: &Room, room2: &Room) -> bool {
-        room1.x < room2.x + room2.width &&
-        room1.x + room1.width > room2.x &&
-        room1.y < room2.y + room2.height &&
-        room1.y + room1.height > room2.y
-    }
-
-    fn create_room(game_map: &mut GameMap, room: &Room) {
-        for x in room.x..room.x + room.width {
-            for y in room.y..room.y + room.height {
-                if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-                    game_map.tiles.insert((x, y), Tile::Floor);
-                }
-            }
-        }
-    }
-
-    fn room_center(room: &Room) -> (i32, i32) {
-        (room.x + room.width / 2, room.y + room.height / 2)
-    }
-
-    fn create_corridor(game_map: &mut GameMap, start: (i32, i32), end: (i32, i32)) {
-        let (mut x, mut y) = start;
-        let (target_x, target_y) = end;
-
-        // Create L-shaped corridor
-        // First move horizontally
-        while x != target_x {
-            if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-                game_map.tiles.insert((x, y), Tile::Floor);
-            }
-            x += if target_x > x { 1 } else { -1 };
-        }
-
-        // Then move vertically
-        while y != target_y {
-            if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-                game_map.tiles.insert((x, y), Tile::Floor);
-            }
-            y += if target_y > y { 1 } else { -1 };
-        }
-
-        // Ensure the endpoint is also a floor
-        if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-            game_map.tiles.insert((x, y), Tile::Floor);
-        }
-    }
-
-    fn add_doors_to_rooms(game_map: &mut GameMap, rooms: &[Room], next_random: &mut impl FnMut() -> u32) {
-        for room in rooms {
-            // Add doors on room perimeter (sometimes)
-            if next_random() % 3 == 0 { // 33% chance of door
-                // Pick a random wall position
-                let side = next_random() % 4;
-                let (door_x, door_y) = match side {
-                    0 => (room.x + (next_random() % room.width as u32) as i32, room.y - 1), // Top
-                    1 => (room.x + room.width, room.y + (next_random() % room.height as u32) as i32), // Right
-                    2 => (room.x + (next_random() % room.width as u32) as i32, room.y + room.height), // Bottom
-                    _ => (room.x - 1, room.y + (next_random() % room.height as u32) as i32), // Left
-                };
-
-                // Only place door if it's adjacent to a floor tile and on a wall
-                if door_x > 0 && door_x < game_map.width - 1 && 
-                   door_y > 0 && door_y < game_map.height - 1 {
-                    if game_map.tiles.get(&(door_x, door_y)) == Some(&Tile::Wall) {
-                        // Check if there's a floor tile nearby (indicating a corridor)
-                        let has_floor_neighbor = [
-                            (door_x - 1, door_y), (door_x + 1, door_y),
-                            (door_x, door_y - 1), (door_x, door_y + 1)
-                        ].iter().any(|(x, y)| 
-                            game_map.tiles.get(&(*x, *y)) == Some(&Tile::Floor)
-                        );
-
-                        if has_floor_neighbor {
-                            game_map.tiles.insert((door_x, door_y), Tile::Door);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn ensure_safe_spawn_position(game_map: &mut GameMap, rooms: &[Room]) {
-        if rooms.is_empty() {
-            return;
-        }
-
-        // Use the center of the first room as spawn point
-        let spawn_room = &rooms[0];
-        let (spawn_x, spawn_y) = Self::room_center(spawn_room);
-        
-        // Place a dungeon exit at the spawn position - this represents the entrance from the overworld
-        game_map.tiles.insert((spawn_x, spawn_y), Tile::DungeonExit);
-        
-        // Create a larger clearing around the exit for better accessibility
-        // Clear a 3x3 area around the exit
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let x = spawn_x + dx;
-                let y = spawn_y + dy;
-                if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-                    // Only convert walls to floors, leave existing floors and doors alone
-                    // Don't overwrite the dungeon exit tile we just placed
-                    if game_map.tiles.get(&(x, y)) == Some(&Tile::Wall) {
-                        game_map.tiles.insert((x, y), Tile::Floor);
-                    }
-                }
-            }
-        }
-        
-        // Also ensure a slightly larger 5x5 area has traversable space, but only convert walls
-        for dx in -2..=2 {
-            for dy in -2..=2 {
-                let x = spawn_x + dx;
-                let y = spawn_y + dy;
-                if x > 0 && x < game_map.width - 1 && y > 0 && y < game_map.height - 1 {
-                    // Only create floor tiles where there are walls, creating a more natural clearing
-                    if game_map.tiles.get(&(x, y)) == Some(&Tile::Wall) && 
-                       (dx.abs() <= 1 || dy.abs() <= 1) { // Ensure at least the cross pattern is clear
-                        game_map.tiles.insert((x, y), Tile::Floor);
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
-struct Room {
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
+pub struct Room {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub id: u32, // Unique room identifier for exploration tracking
 }

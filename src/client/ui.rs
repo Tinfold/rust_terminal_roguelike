@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
+use rust_cli_roguelike::common::game_logic::GameLogic;
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
     match app.current_screen {
@@ -310,8 +311,15 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                 };
                 
                 if let Some(tile) = tile {
-                    let (style, character) = get_tile_style_and_char(tile);
-                    spans.push(Span::styled(character.to_string(), style));
+                    // Check if tile should be visible (for dungeon exploration)
+                    if app.current_map_type == MapType::Dungeon && 
+                       !GameLogic::is_tile_visible(&app.game_map, &app.player, world_x, world_y) {
+                        // Show unexplored areas as dark/unknown
+                        spans.push(Span::styled("?".to_string(), Style::default().fg(Color::DarkGray)));
+                    } else {
+                        let (style, character) = get_tile_style_and_char(tile);
+                        spans.push(Span::styled(character.to_string(), style));
+                    }
                 } else {
                     // Out of bounds or empty space - show void
                     spans.push(Span::styled(" ".to_string(), Style::default().bg(Color::Black)));

@@ -192,11 +192,15 @@ impl App {
                 max_hp: 20,
                 symbol: '@',
                 dungeon_entrance_pos: None,
+                opened_doors: std::collections::HashSet::new(),
+                explored_rooms: std::collections::HashSet::new(),
             },
             game_map: GameMap {
                 width: 0,
                 height: 0,
                 tiles: HashMap::new(),
+                rooms: Vec::new(),
+                room_positions: HashMap::new(),
             },
             chunk_manager: None,
             multiplayer_chunks: HashMap::new(),
@@ -232,6 +236,8 @@ impl App {
             width: 0,
             height: 0,
             tiles: HashMap::new(),
+            rooms: Vec::new(),
+            room_positions: HashMap::new(),
         };
         self.messages = vec!["Welcome to the infinite overworld! Explore and discover new terrain as you move.".to_string()];
     }
@@ -345,6 +351,8 @@ impl App {
                                     width: 0,
                                     height: 0,
                                     tiles: HashMap::new(),
+                                    rooms: Vec::new(),
+                                    room_positions: HashMap::new(),
                                 };
                                 self.messages.push("You emerge from the dungeon into the overworld.".to_string());
                             }
@@ -437,6 +445,13 @@ impl App {
                 self.player.y = new_y;
                 self.turn_count += 1;
                 
+                // Handle door opening in dungeons
+                if self.current_map_type == MapType::Dungeon && tile == Tile::Door {
+                    if GameLogic::open_door(&self.game_map, &mut self.player, new_x, new_y) {
+                        self.messages.push("You open the door and reveal new areas!".to_string());
+                    }
+                }
+                
                 // Add flavor text for tile interactions
                 if let Some(message) = GameLogic::get_tile_interaction_message(tile) {
                     self.messages.push(message);
@@ -481,6 +496,9 @@ impl App {
                     self.player.x = spawn_x;
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Dungeon;
+                    
+                    // Initialize exploration system for the new dungeon
+                    GameLogic::initialize_dungeon_exploration(&self.game_map, &mut self.player);
                     self.messages.push("You descend into the dungeon...".to_string());
                 } else {
                     self.messages.push("You're not at a dungeon entrance.".to_string());
@@ -513,6 +531,8 @@ impl App {
                             width: 0,
                             height: 0,
                             tiles: HashMap::new(),
+                            rooms: Vec::new(),
+                            room_positions: HashMap::new(),
                         };
                         
                         // Use stored entrance position or fall back to default spawn

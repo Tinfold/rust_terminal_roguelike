@@ -4,9 +4,10 @@ use super::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
 use super::constants::GameConstants;
 use super::terrain::TerrainGenerator;
 use super::chunk::ChunkManager;
+use super::dungeon::DungeonGenerator;
 
 // Re-export common types that both client and server need
-pub use super::terrain::{Tile, GameMap};
+pub use super::terrain::{Tile, GameMap, Room};
 pub use super::chunk::{ChunkManager as GameChunkManager, ChunkCoord};
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,9 @@ pub struct Player {
     pub max_hp: i32,
     pub symbol: char,
     pub dungeon_entrance_pos: Option<(i32, i32)>, // Position of the dungeon entrance they came from
+    // Exploration tracking for dungeons
+    pub opened_doors: std::collections::HashSet<(i32, i32)>, // Positions of doors that have been opened
+    pub explored_rooms: std::collections::HashSet<u32>, // IDs of rooms that have been explored
 }
 
 pub struct GameLogic;
@@ -78,41 +82,28 @@ impl GameLogic {
             width: network_map.width,
             height: network_map.height,
             tiles,
+            rooms: Vec::new(), // Network maps don't include room data currently
+            room_positions: HashMap::new(),
         }
     }
 
     /// Common logic for entering a dungeon - generates the dungeon map
     pub fn generate_dungeon_map() -> GameMap {
-        // Use the sophisticated terrain generator from the terrain module
+        // Use the sophisticated dungeon generator from the dungeon module
         let width = GameConstants::DUNGEON_WIDTH;
         let height = GameConstants::DUNGEON_HEIGHT;
         
-        TerrainGenerator::generate_dungeon(width, height)
+        DungeonGenerator::generate_dungeon(width, height)
     }
 
     /// Generate a dungeon map based on entrance position for uniqueness
     pub fn generate_dungeon_map_for_entrance(entrance_x: i32, entrance_y: i32) -> GameMap {
-        let width = GameConstants::DUNGEON_WIDTH;
-        let height = GameConstants::DUNGEON_HEIGHT;
-        
-        // Generate a unique seed based on entrance position
-        let seed = Self::generate_dungeon_seed(entrance_x, entrance_y);
-        
-        TerrainGenerator::generate_dungeon_with_seed(width, height, seed)
+        DungeonGenerator::generate_dungeon_for_entrance(entrance_x, entrance_y)
     }
 
     /// Generate a unique seed for a dungeon based on its entrance position
     pub fn generate_dungeon_seed(entrance_x: i32, entrance_y: i32) -> u32 {
-        // Use entrance coordinates to create a deterministic but unique seed
-        let mut seed = 0x9e3779b9u32; // A good base seed (golden ratio * 2^32)
-        seed = seed.wrapping_add(entrance_x as u32).wrapping_mul(0x85ebca6b);
-        seed = seed.wrapping_add(entrance_y as u32).wrapping_mul(0xc2b2ae35);
-        seed = seed ^ (seed >> 16);
-        seed = seed.wrapping_mul(0x85ebca6b);
-        seed = seed ^ (seed >> 13);
-        seed = seed.wrapping_mul(0xc2b2ae35);
-        seed = seed ^ (seed >> 16);
-        seed
+        DungeonGenerator::generate_dungeon_seed(entrance_x, entrance_y)
     }
 
     /// Common logic for exiting to overworld - generates the overworld map
@@ -127,54 +118,20 @@ impl GameLogic {
     /// Generate a dungeon map with a specific seed for consistency
     pub fn generate_dungeon_map_with_seed(seed: u32) -> GameMap {
         // Use the seed to ensure consistent dungeon generation
-        // Different seeds could generate different dungeons for different entrances
         let width = GameConstants::DUNGEON_WIDTH;
         let height = GameConstants::DUNGEON_HEIGHT;
         
-        // For now, we use the standard generator but could enhance it with seed support
-        let _ = seed; // Acknowledge the parameter for future use
-        TerrainGenerator::generate_dungeon(width, height)
+        DungeonGenerator::generate_dungeon_with_seed(width, height, seed)
     }
 
     /// Get default dungeon spawn position - now finds a safe floor tile
     pub fn get_dungeon_spawn_position() -> (i32, i32) {
-        (GameConstants::DUNGEON_SPAWN_X, GameConstants::DUNGEON_SPAWN_Y)
+        DungeonGenerator::get_default_spawn_position()
     }
 
     /// Get a safe spawn position in a given dungeon map
     pub fn get_safe_dungeon_spawn_position(dungeon_map: &GameMap) -> (i32, i32) {
-        // First, look for a DungeonExit tile - this is the intended spawn position
-        for y in 1..dungeon_map.height - 1 {
-            for x in 1..dungeon_map.width - 1 {
-                if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
-                    if *tile == Tile::DungeonExit {
-                        return (x, y);
-                    }
-                }
-            }
-        }
-        
-        // If no dungeon exit found, try the default spawn position
-        let default_pos = (GameConstants::DUNGEON_SPAWN_X, GameConstants::DUNGEON_SPAWN_Y);
-        if let Some(tile) = dungeon_map.tiles.get(&default_pos) {
-            if *tile == Tile::Floor {
-                return default_pos;
-            }
-        }
-
-        // If default position is not safe, find the first floor tile
-        for y in 1..dungeon_map.height - 1 {
-            for x in 1..dungeon_map.width - 1 {
-                if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
-                    if *tile == Tile::Floor {
-                        return (x, y);
-                    }
-                }
-            }
-        }
-
-        // Fallback to default position (should not happen with proper generation)
-        default_pos
+        DungeonGenerator::get_safe_spawn_position(dungeon_map)
     }
 
     /// Get default overworld spawn position
@@ -222,6 +179,252 @@ impl GameLogic {
         let max_y = center_y + height / 2;
         
         chunk_manager.get_tiles_in_area(min_x, min_y, max_x, max_y)
+    }
+
+    /// Check if a tile should be visible based on room exploration
+    pub fn is_tile_visible(game_map: &GameMap, player: &Player, x: i32, y: i32) -> bool {
+        // In overworld, all tiles are always visible
+        if game_map.rooms.is_empty() {
+            return true;
+        }
+        
+        // Check if position is in a room
+        if let Some(&room_id) = game_map.room_positions.get(&(x, y)) {
+            // Tile is visible if the room has been explored
+            return player.explored_rooms.contains(&room_id);
+        }
+        
+        // Check if position is a corridor (not in any room)
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::Floor {
+                // For corridors, check if any adjacent explored room makes it visible
+                for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                        if player.explored_rooms.contains(&room_id) {
+                            return true;
+                        }
+                    }
+                }
+                
+                // Also check if connected to the corridor network through opened doors
+                if Self::is_corridor_connected_to_explored_area(game_map, player, x, y) {
+                    return true;
+                }
+            }
+        }
+        
+        // Doors are visible if they connect to an explored room
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::Door {
+                // Check if door has been opened
+                if player.opened_doors.contains(&(x, y)) {
+                    return true;
+                }
+                
+                // Check if door is adjacent to an explored room
+                for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                        if player.explored_rooms.contains(&room_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Dungeon exit is always visible
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::DungeonExit {
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    /// Handle opening a door and revealing connected rooms and corridors
+    pub fn open_door(game_map: &GameMap, player: &mut Player, x: i32, y: i32) -> bool {
+        // Check if position has a door
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::Door {
+                // Mark door as opened
+                player.opened_doors.insert((x, y));
+                
+                // Reveal rooms connected by this door
+                for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                        player.explored_rooms.insert(room_id);
+                    }
+                }
+                
+                // Also reveal connected corridor networks
+                Self::reveal_connected_corridors(game_map, player, x, y);
+                
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Reveal corridor network connected to a position using flood fill
+    fn reveal_connected_corridors(game_map: &GameMap, player: &mut Player, start_x: i32, start_y: i32) {
+        let mut stack = vec![(start_x, start_y)];
+        let mut visited = std::collections::HashSet::new();
+        
+        while let Some((x, y)) = stack.pop() {
+            if visited.contains(&(x, y)) {
+                continue;
+            }
+            visited.insert((x, y));
+            
+            // Check all adjacent tiles
+            for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + dx;
+                let ny = y + dy;
+                
+                // Skip if already visited
+                if visited.contains(&(nx, ny)) {
+                    continue;
+                }
+                
+                // Check if this position has a walkable tile
+                if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
+                    match tile {
+                        Tile::Floor => {
+                            // If it's a corridor (not in a room), continue exploring
+                            if game_map.room_positions.get(&(nx, ny)).is_none() {
+                                stack.push((nx, ny));
+                            }
+                        },
+                        Tile::Door => {
+                            // If it's a door that connects to an explored room or corridor, continue exploring
+                            let connects_to_explored = Self::door_connects_to_explored_area(game_map, player, nx, ny);
+                            if connects_to_explored || player.opened_doors.contains(&(nx, ny)) {
+                                player.opened_doors.insert((nx, ny));
+                                stack.push((nx, ny));
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Check if a door connects to an already explored area
+    fn door_connects_to_explored_area(game_map: &GameMap, player: &Player, door_x: i32, door_y: i32) -> bool {
+        for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let nx = door_x + dx;
+            let ny = door_y + dy;
+            
+            // Check if adjacent to an explored room
+            if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                if player.explored_rooms.contains(&room_id) {
+                    return true;
+                }
+            }
+            
+            // Check if adjacent to a corridor that should be visible
+            if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
+                if tile == Tile::Floor && game_map.room_positions.get(&(nx, ny)).is_none() {
+                    // This is a corridor - check if it should be visible based on current visibility rules
+                    if Self::is_corridor_visible(game_map, player, nx, ny) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+    
+    /// Check if a corridor tile should be visible (helper function)
+    fn is_corridor_visible(game_map: &GameMap, player: &Player, x: i32, y: i32) -> bool {
+        // Check if any adjacent explored room makes this corridor visible
+        for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let nx = x + dx;
+            let ny = y + dy;
+            if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                if player.explored_rooms.contains(&room_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Initialize player exploration for a new dungeon
+    pub fn initialize_dungeon_exploration(game_map: &GameMap, player: &mut Player) {
+        // Clear previous exploration data
+        player.opened_doors.clear();
+        player.explored_rooms.clear();
+        
+        // Find the starting room (containing the dungeon exit)
+        for (pos, &tile) in &game_map.tiles {
+            if tile == Tile::DungeonExit {
+                if let Some(&room_id) = game_map.room_positions.get(pos) {
+                    player.explored_rooms.insert(room_id);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Check if a corridor is connected to an explored area through opened doors
+    fn is_corridor_connected_to_explored_area(game_map: &GameMap, player: &Player, start_x: i32, start_y: i32) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back((start_x, start_y));
+        
+        while let Some((x, y)) = queue.pop_front() {
+            if visited.contains(&(x, y)) {
+                continue;
+            }
+            visited.insert((x, y));
+            
+            // Check all adjacent positions
+            for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + dx;
+                let ny = y + dy;
+                
+                if visited.contains(&(nx, ny)) {
+                    continue;
+                }
+                
+                // Check if adjacent to an explored room
+                if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                    if player.explored_rooms.contains(&room_id) {
+                        return true;
+                    }
+                }
+                
+                // Check if there's a walkable path
+                if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
+                    match tile {
+                        Tile::Floor => {
+                            // If it's a corridor, continue searching
+                            if game_map.room_positions.get(&(nx, ny)).is_none() {
+                                queue.push_back((nx, ny));
+                            }
+                        },
+                        Tile::Door => {
+                            // If it's an opened door, continue searching through it
+                            if player.opened_doors.contains(&(nx, ny)) {
+                                queue.push_back((nx, ny));
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        false
     }
 }
 

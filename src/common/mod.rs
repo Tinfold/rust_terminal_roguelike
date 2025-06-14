@@ -4,3 +4,4 @@ pub mod game_logic;
 pub mod constants;
 pub mod terrain;
 pub mod chunk;
+pub mod dungeon;

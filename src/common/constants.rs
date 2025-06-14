@@ -5,14 +5,14 @@ impl GameConstants {
     // Map dimensions
     pub const OVERWORLD_WIDTH: i32 = 60;
     pub const OVERWORLD_HEIGHT: i32 = 30;
-    pub const DUNGEON_WIDTH: i32 = 40;
-    pub const DUNGEON_HEIGHT: i32 = 20;
+    pub const DUNGEON_WIDTH: i32 = 80;
+    pub const DUNGEON_HEIGHT: i32 = 40;
 
     // Spawn positions
     pub const OVERWORLD_SPAWN_X: i32 = 30;
     pub const OVERWORLD_SPAWN_Y: i32 = 15;
-    pub const DUNGEON_SPAWN_X: i32 = 5;
-    pub const DUNGEON_SPAWN_Y: i32 = 5;
+    pub const DUNGEON_SPAWN_X: i32 = 10;
+    pub const DUNGEON_SPAWN_Y: i32 = 10;
 
     // Player stats
     pub const DEFAULT_HP: i32 = 20;
