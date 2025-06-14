@@ -278,8 +278,8 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                         .fg(Color::Yellow)
                         .bg(Color::DarkGray)
                 ));
-            } else if let Some(other_player) = app.other_players.values().find(|p| p.x == world_x && p.y == world_y) {
-                // Other players in multiplayer mode - use their assigned color
+            } else if let Some(other_player) = app.other_players.values().find(|p| p.x == world_x && p.y == world_y && p.current_map_type == app.current_map_type) {
+                // Other players in multiplayer mode - only show players in the same map
                 let player_color = Color::Rgb(other_player.color.0, other_player.color.1, other_player.color.2);
                 spans.push(Span::styled(
                     other_player.symbol.to_string(),
@@ -297,10 +297,16 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                         app.game_map.tiles.get(&(world_x, world_y)).copied()
                     }
                 } else {
-                    // Multiplayer: try multiplayer chunks first, then traditional map
-                    app.get_multiplayer_tile(world_x, world_y).or_else(|| 
+                    // Multiplayer: check if in dungeon first, then use appropriate map source
+                    if app.current_map_type == MapType::Dungeon {
+                        // In dungeon: use the traditional game map
                         app.game_map.tiles.get(&(world_x, world_y)).copied()
-                    )
+                    } else {
+                        // In overworld: try multiplayer chunks first, then traditional map
+                        app.get_multiplayer_tile(world_x, world_y).or_else(|| 
+                            app.game_map.tiles.get(&(world_x, world_y)).copied()
+                        )
+                    }
                 };
                 
                 if let Some(tile) = tile {
@@ -318,14 +324,16 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
     let title = match app.current_map_type {
         MapType::Overworld => {
             if app.game_mode == GameMode::MultiPlayer {
-                format!("🌍 Overworld (Players: {})", app.other_players.len() + 1)
+                let players_in_overworld = app.other_players.values().filter(|p| p.current_map_type == MapType::Overworld).count() + 1;
+                format!("🌍 Overworld (Players: {})", players_in_overworld)
             } else {
                 "🌍 Overworld".to_string()
             }
         },
         MapType::Dungeon => {
             if app.game_mode == GameMode::MultiPlayer {
-                format!("🏰 Dungeon (Players: {})", app.other_players.len() + 1)
+                let players_in_dungeon = app.other_players.values().filter(|p| p.current_map_type == MapType::Dungeon).count() + 1;
+                format!("🏰 Dungeon (Players: {})", players_in_dungeon)
             } else {
                 "🏰 Dungeon".to_string()
             }
@@ -536,6 +544,10 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
             Style::default(),
             ' '
         ),
+        Tile::Door => (
+            Style::default().fg(Color::Yellow).bg(Color::Rgb(139, 69, 19)), // Brown door
+            '+'
+        ),
         Tile::Grass => (
             Style::default().fg(Color::Green),
             '"'
@@ -563,6 +575,10 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
         Tile::DungeonEntrance => (
             Style::default().fg(Color::Red).bg(Color::Black),
             'D'
+        ),
+        Tile::DungeonExit => (
+            Style::default().fg(Color::Cyan).bg(Color::Black),
+            '<'
         ),
     }
 }

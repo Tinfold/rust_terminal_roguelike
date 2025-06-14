@@ -10,7 +10,7 @@ use rust_cli_roguelike::common::protocol::{
     ClientMessage, ServerMessage, GameState, NetworkPlayer, ChunkData,
     NetworkCurrentScreen, PlayerId, MapType
 };
-use rust_cli_roguelike::common::game_logic::{GameLogic, Tile, GameChunkManager};
+use rust_cli_roguelike::common::game_logic::{GameLogic, Tile, GameChunkManager, GameMap};
 use rust_cli_roguelike::common::chunk::CHUNK_SIZE;
 
 type SharedGameState = Arc<Mutex<ServerGameState>>;
@@ -35,9 +35,11 @@ const PLAYER_COLORS: [(u8, u8, u8); 10] = [
 struct ServerGameState {
     players: HashMap<PlayerId, NetworkPlayer>,
     chunk_manager: GameChunkManager,
-    current_map_type: MapType,
     turn_count: u32,
     client_senders: HashMap<PlayerId, ClientSender>,
+    // Store generated dungeons keyed by entrance coordinates
+    dungeons: HashMap<(i32, i32), GameMap>,
+    // Note: current_map_type is now per-player, not global
 }
 
 impl ServerGameState {
@@ -49,9 +51,9 @@ impl ServerGameState {
         Self {
             players: HashMap::new(),
             chunk_manager,
-            current_map_type: MapType::Overworld,
             turn_count: 0,
             client_senders: HashMap::new(),
+            dungeons: HashMap::new(),
         }
     }
 
@@ -72,6 +74,8 @@ impl ServerGameState {
             symbol: '@',
             current_screen: NetworkCurrentScreen::Game,
             color,
+            current_map_type: MapType::Overworld, // New players start in overworld
+            dungeon_entrance_pos: None, // No dungeon entrance initially
         };
 
         self.players.insert(player_id.clone(), player.clone());
@@ -100,56 +104,60 @@ impl ServerGameState {
         if let Some(player) = self.players.get_mut(player_id) {
             let new_x = player.x + dx;
             let new_y = player.y + dy;
+            let current_map_type = player.current_map_type;
 
-            // Update chunk manager with player position
-            self.chunk_manager.update_player_position(new_x, new_y);
-
-            // Check if the new position is valid using chunk manager
-            if let Some(tile) = self.chunk_manager.get_tile(new_x, new_y) {
-                if GameLogic::is_movement_valid(tile) {
-                    player.x = new_x;
-                    player.y = new_y;
-                    self.turn_count += 1;
-
-                    // Handle special tile interactions - send personalized messages to player
-                    if let Some(interaction_message) = GameLogic::get_tile_interaction_message(tile) {
-                        let msg = ServerMessage::Message {
-                            text: interaction_message,
-                        };
-                        // Send to the specific player
-                        if let Some(sender) = self.client_senders.get(player_id) {
-                            let _ = sender.send(msg);
-                        }
+            // Validate movement based on player's current map type
+            let (tile, is_valid) = if current_map_type == MapType::Dungeon {
+                // In dungeons, use the stored dungeon map for proper validation
+                let tile = if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                    let entrance_key = (entrance_x, entrance_y);
+                    if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                        dungeon_map.tiles.get(&(new_x, new_y)).cloned()
+                    } else {
+                        None
                     }
-                    
-                    // Handle special multiplayer tile interactions - broadcast to all players
-                    if tile == Tile::Village {
-                        let player_name = player.name.clone();
-                        let msg = ServerMessage::Message {
-                            text: format!("{} visits the village.", player_name),
-                        };
-                        self.broadcast_to_all(msg);
-                    }
-
-                    // Notify all players about the movement
-                    let move_message = ServerMessage::PlayerMoved {
-                        player_id: player_id.clone(),
-                        x: new_x,
-                        y: new_y,
-                    };
-                    self.broadcast_to_all(move_message);
-
-                    // Send updated game state
-                    self.broadcast_game_state();
-                    Ok(())
                 } else {
-                    Err(GameLogic::get_blocked_movement_message(tile))
-                }
+                    None
+                };
+                
+                let is_valid = tile.map_or(false, |t| GameLogic::is_movement_valid(t));
+                (tile, is_valid)
             } else {
-                // No tile found - allow movement in infinite terrain (generate on demand)
+                // In overworld, use chunk manager
+                self.chunk_manager.update_player_position(new_x, new_y);
+                let tile = self.chunk_manager.get_tile(new_x, new_y);
+                let is_valid = tile.map_or(true, |t| GameLogic::is_movement_valid(t));
+                (tile, is_valid)
+            };
+
+            if is_valid {
                 player.x = new_x;
                 player.y = new_y;
                 self.turn_count += 1;
+
+                // Handle special tile interactions only in overworld
+                if current_map_type == MapType::Overworld {
+                    if let Some(tile) = tile {
+                        if let Some(interaction_message) = GameLogic::get_tile_interaction_message(tile) {
+                            let msg = ServerMessage::Message {
+                                text: interaction_message,
+                            };
+                            // Send to the specific player
+                            if let Some(sender) = self.client_senders.get(player_id) {
+                                let _ = sender.send(msg);
+                            }
+                        }
+                        
+                        // Handle special multiplayer tile interactions - broadcast to all players
+                        if tile == Tile::Village {
+                            let player_name = player.name.clone();
+                            let msg = ServerMessage::Message {
+                                text: format!("{} visits the village.", player_name),
+                            };
+                            self.broadcast_to_all(msg);
+                        }
+                    }
+                }
 
                 // Notify all players about the movement
                 let move_message = ServerMessage::PlayerMoved {
@@ -162,6 +170,9 @@ impl ServerGameState {
                 // Send updated game state
                 self.broadcast_game_state();
                 Ok(())
+            } else {
+                let tile = tile.unwrap_or(Tile::Wall);
+                Err(GameLogic::get_blocked_movement_message(tile))
             }
         } else {
             Err("Player not found.".to_string())
@@ -169,49 +180,115 @@ impl ServerGameState {
     }
 
     fn enter_dungeon(&mut self, player_id: &PlayerId) -> Result<(), String> {
-        if let Some(player) = self.players.get(player_id) {
-            if GameLogic::is_at_chunk_dungeon_entrance(&mut self.chunk_manager, player.x, player.y) {
-                // Move all players to dungeon start
-                let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
-                for player in self.players.values_mut() {
-                    player.x = spawn_x;
-                    player.y = spawn_y;
-                }
-                self.current_map_type = MapType::Dungeon;
-
-                self.broadcast_game_state();
-                let msg = ServerMessage::Message {
-                    text: "The party descends into the dungeon...".to_string(),
-                };
-                self.broadcast_to_all(msg);
-                Ok(())
+        // First check if player exists and get their current state
+        let (player_x, player_y, player_name, is_in_overworld) = {
+            if let Some(player) = self.players.get(player_id) {
+                (player.x, player.y, player.name.clone(), player.current_map_type == MapType::Overworld)
             } else {
-                Err("You're not at a dungeon entrance.".to_string())
+                return Err("Player not found.".to_string());
             }
+        };
+
+        if !is_in_overworld {
+            return Err("You're already in a dungeon.".to_string());
+        }
+
+        // Check if player is at a dungeon entrance
+        if !GameLogic::is_at_chunk_dungeon_entrance(&mut self.chunk_manager, player_x, player_y) {
+            return Err("You're not at a dungeon entrance.".to_string());
+        }
+
+        // Get or generate the dungeon for this entrance
+        let entrance_key = (player_x, player_y);
+        let dungeon_map = if let Some(existing_dungeon) = self.dungeons.get(&entrance_key) {
+            // Use existing dungeon
+            existing_dungeon.clone()
+        } else {
+            // Generate new dungeon and store it
+            let new_dungeon = GameLogic::generate_dungeon_map_for_entrance(player_x, player_y);
+            self.dungeons.insert(entrance_key, new_dungeon.clone());
+            new_dungeon
+        };
+
+        // Now move the player to the dungeon
+        if let Some(player) = self.players.get_mut(player_id) {
+            // Store the entrance position before moving to dungeon
+            player.dungeon_entrance_pos = Some((player_x, player_y));
+            
+            let (spawn_x, spawn_y) = GameLogic::get_safe_dungeon_spawn_position(&dungeon_map);
+            player.x = spawn_x;
+            player.y = spawn_y;
+            player.current_map_type = MapType::Dungeon;
+
+            // Send the dungeon map to the player
+            let network_dungeon_map = GameLogic::game_map_to_network(&dungeon_map);
+            self.send_to_player(player_id, ServerMessage::DungeonData { 
+                dungeon_map: network_dungeon_map 
+            });
+
+            self.broadcast_game_state();
+            let msg = ServerMessage::Message {
+                text: format!("{} descends into the dungeon...", player_name),
+            };
+            self.broadcast_to_all(msg);
+            Ok(())
         } else {
             Err("Player not found.".to_string())
         }
     }
 
-    fn exit_dungeon(&mut self, _player_id: &PlayerId) -> Result<(), String> {
-        if self.current_map_type == MapType::Dungeon {
-            self.current_map_type = MapType::Overworld;
-
-            // Move all players back to overworld
-            let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
-            for player in self.players.values_mut() {
-                player.x = spawn_x;
-                player.y = spawn_y;
+    fn exit_dungeon(&mut self, player_id: &PlayerId) -> Result<(), String> {
+        // First check if player exists and get their current state
+        let (player_name, is_in_dungeon, player_x, player_y) = {
+            if let Some(player) = self.players.get(player_id) {
+                (player.name.clone(), player.current_map_type == MapType::Dungeon, player.x, player.y)
+            } else {
+                return Err("Player not found.".to_string());
             }
+        };
+
+        if !is_in_dungeon {
+            return Err("You're not in a dungeon.".to_string());
+        }
+
+        // In multiplayer, we need to check if the player is at a dungeon exit position
+        // Use the stored dungeon map to check the tile at player's position
+        if let Some(player) = self.players.get(player_id) {
+            if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                let entrance_key = (entrance_x, entrance_y);
+                if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                    if !GameLogic::is_at_dungeon_exit(dungeon_map, player_x, player_y) {
+                        return Err("You must be at the dungeon entrance (marked with '<') to exit.".to_string());
+                    }
+                } else {
+                    // Fallback: generate dungeon if not found (shouldn't happen)
+                    let dungeon_map = GameLogic::generate_dungeon_map_for_entrance(entrance_x, entrance_y);
+                    if !GameLogic::is_at_dungeon_exit(&dungeon_map, player_x, player_y) {
+                        return Err("You must be at the dungeon entrance (marked with '<') to exit.".to_string());
+                    }
+                }
+            }
+        }
+
+        // Now move the player to the overworld
+        if let Some(player) = self.players.get_mut(player_id) {
+            // Use stored entrance position or fall back to default spawn
+            let (spawn_x, spawn_y) = player.dungeon_entrance_pos
+                .unwrap_or_else(|| GameLogic::get_overworld_spawn_position());
+            
+            player.x = spawn_x;
+            player.y = spawn_y;
+            player.current_map_type = MapType::Overworld;
+            player.dungeon_entrance_pos = None; // Clear the stored entrance position
 
             self.broadcast_game_state();
             let msg = ServerMessage::Message {
-                text: "The party emerges from the dungeon into the overworld.".to_string(),
+                text: format!("{} emerges from the dungeon into the overworld.", player_name),
             };
             self.broadcast_to_all(msg);
             Ok(())
         } else {
-            Err("You're not in a dungeon.".to_string())
+            Err("Player not found.".to_string())
         }
     }
 
@@ -255,7 +332,6 @@ impl ServerGameState {
     fn broadcast_game_state(&self) {
         let game_state = GameState {
             players: self.players.clone(),
-            current_map_type: self.current_map_type,
             turn_count: self.turn_count,
         };
 
@@ -293,6 +369,22 @@ impl ServerGameState {
         
         // Send chunk data to the requesting player
         self.send_to_player(player_id, ServerMessage::ChunkData { chunks: chunk_data });
+    }
+
+    fn handle_dungeon_data_request(&mut self, player_id: &PlayerId) {
+        if let Some(player) = self.players.get(player_id) {
+            if player.current_map_type == MapType::Dungeon {
+                if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                    let entrance_key = (entrance_x, entrance_y);
+                    if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                        let network_dungeon_map = GameLogic::game_map_to_network(dungeon_map);
+                        self.send_to_player(player_id, ServerMessage::DungeonData { 
+                            dungeon_map: network_dungeon_map 
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -365,6 +457,9 @@ async fn handle_client(stream: TcpStream, game_state: SharedGameState) {
                         }
                         ClientMessage::RequestChunks { chunks } => {
                             state.handle_chunk_request(&player_id, chunks);
+                        }
+                        ClientMessage::RequestDungeonData => {
+                            state.handle_dungeon_data_request(&player_id);
                         }
                         ClientMessage::EnterDungeon => {
                             match state.enter_dungeon(&player_id) {

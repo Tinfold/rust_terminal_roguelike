@@ -217,9 +217,9 @@ impl InfiniteTerrainGenerator {
     }
 
     fn should_place_dungeon_entrance(&self, world_x: i32, world_y: i32) -> bool {
-        // Dungeon entrances are rarer than villages
+        // Dungeon entrances are more common and accessible
         let hash = self.hash_coords(world_x, world_y, 54321);
-        hash % 15000 == 0 && self.is_suitable_for_dungeon(world_x, world_y)
+        hash % 8000 == 0 && self.is_suitable_for_dungeon(world_x, world_y)
     }
 
     fn should_place_road(&self, world_x: i32, world_y: i32) -> bool {
@@ -269,9 +269,11 @@ impl InfiniteTerrainGenerator {
 
     fn is_suitable_for_dungeon(&self, world_x: i32, world_y: i32) -> bool {
         let elevation = self.sample_elevation(world_x as f64 * 0.02, world_y as f64 * 0.02);
+        let moisture = self.sample_moisture(world_x as f64 * 0.014, world_y as f64 * 0.014);
         
-        // Dungeons prefer higher elevation (mountains/hills)
-        elevation > 0.6
+        // Dungeons prefer moderate to higher elevation, but not mountains
+        // Allow dungeons on accessible terrain like hills and forest areas
+        elevation > 0.35 && elevation < 0.75 && moisture > 0.2
     }
 
     fn determine_biome_tile(&self, elevation: f64, moisture: f64, temperature: f64, detail: f64) -> Tile {

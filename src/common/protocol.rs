@@ -25,6 +25,7 @@ pub enum ClientMessage {
     Connect { player_name: String },
     Move { dx: i32, dy: i32 },
     RequestChunks { chunks: Vec<(i32, i32)> }, // Request specific chunk coordinates
+    RequestDungeonData, // Request current dungeon map
     EnterDungeon,
     ExitDungeon,
     OpenInventory,
@@ -38,6 +39,7 @@ pub enum ServerMessage {
     Connected { player_id: PlayerId },
     GameState { state: GameState },
     ChunkData { chunks: Vec<ChunkData> }, // Send chunk data to clients
+    DungeonData { dungeon_map: NetworkGameMap }, // Send dungeon map to clients
     PlayerMoved { player_id: PlayerId, x: i32, y: i32 },
     PlayerJoined { player_id: PlayerId, player: NetworkPlayer },
     PlayerLeft { player_id: PlayerId },
@@ -49,9 +51,9 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameState {
     pub players: HashMap<PlayerId, NetworkPlayer>,
-    pub current_map_type: MapType,
     pub turn_count: u32,
     // Chunks are sent separately via ChunkData messages
+    // Note: current_map_type is now per-player
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,8 @@ pub struct NetworkPlayer {
     pub symbol: char,
     pub current_screen: NetworkCurrentScreen,
     pub color: (u8, u8, u8), // RGB color tuple for this player
+    pub current_map_type: MapType, // Each player can be in a different map
+    pub dungeon_entrance_pos: Option<(i32, i32)>, // Position of the dungeon entrance they came from
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

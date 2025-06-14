@@ -48,6 +48,7 @@ impl NetworkClient {
             game_state: None,
             messages: Vec::new(),
             multiplayer_chunks: std::collections::HashMap::new(),
+            dungeon_map: None,
         };
 
         // Send initial connect message
