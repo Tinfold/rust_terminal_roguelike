@@ -76,6 +76,8 @@ impl ServerGameState {
             color,
             current_map_type: MapType::Overworld, // New players start in overworld
             dungeon_entrance_pos: None, // No dungeon entrance initially
+            opened_doors: std::collections::HashSet::new(), // Initialize empty exploration data
+            explored_rooms: std::collections::HashSet::new(), // Initialize empty exploration data
         };
 
         self.players.insert(player_id.clone(), player.clone());
@@ -219,6 +221,9 @@ impl ServerGameState {
             player.x = spawn_x;
             player.y = spawn_y;
             player.current_map_type = MapType::Dungeon;
+
+            // Initialize exploration system for the new dungeon
+            GameLogic::initialize_network_player_dungeon_exploration(&dungeon_map, player);
 
             // Send the dungeon map to the player
             let network_dungeon_map = GameLogic::game_map_to_network(&dungeon_map);

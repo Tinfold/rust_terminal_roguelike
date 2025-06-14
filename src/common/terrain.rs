@@ -18,6 +18,10 @@ pub enum Tile {
     DungeonEntrance,
     // Dungeon tiles
     DungeonExit,
+    // Special dungeon tiles for different generation types
+    CaveFloor,    // For cellular automata caves
+    CaveWall,     // For cellular automata caves
+    Corridor,     // For distinguishing corridors from rooms
 }
 
 #[derive(Debug, Clone)]
@@ -25,8 +29,12 @@ pub struct GameMap {
     pub width: i32,
     pub height: i32,
     pub tiles: HashMap<(i32, i32), Tile>,
-    pub rooms: Vec<Room>, // Store room information for visibility tracking
-    pub room_positions: HashMap<(i32, i32), u32>, // Map positions to room IDs
+    pub rooms: Vec<Room>,
+    pub room_positions: HashMap<(i32, i32), u32>,
+    // Fog of war and visibility
+    pub visible_tiles: HashMap<(i32, i32), bool>,      // Currently visible tiles
+    pub explored_tiles: HashMap<(i32, i32), bool>,     // Previously explored tiles
+    pub illuminated_areas: HashMap<u32, bool>,          // Room/area illumination state
 }
 
 pub struct TerrainGenerator;
@@ -39,6 +47,9 @@ impl TerrainGenerator {
             tiles: HashMap::new(),
             rooms: Vec::new(),
             room_positions: HashMap::new(),
+            visible_tiles: HashMap::new(),
+            explored_tiles: HashMap::new(),
+            illuminated_areas: HashMap::new(),
         };
         
         // Create noise generators with different seeds for various terrain features
@@ -306,11 +317,136 @@ impl TerrainGenerator {
     }
 }
 
+impl GameMap {
+    /// Initialize a new empty GameMap
+    pub fn new(width: i32, height: i32) -> Self {
+        GameMap {
+            width,
+            height,
+            tiles: HashMap::new(),
+            rooms: Vec::new(),
+            room_positions: HashMap::new(),
+            visible_tiles: HashMap::new(),
+            explored_tiles: HashMap::new(),
+            illuminated_areas: HashMap::new(),
+        }
+    }
+
+    /// Update visibility from a given position (player's location)
+    pub fn update_visibility(&mut self, player_x: i32, player_y: i32, sight_radius: i32) {
+        // Clear current visibility
+        self.visible_tiles.clear();
+        
+        // Use simple circle-based line of sight
+        for dx in -sight_radius..=sight_radius {
+            for dy in -sight_radius..=sight_radius {
+                let x = player_x + dx;
+                let y = player_y + dy;
+                
+                // Check if within sight radius
+                if dx * dx + dy * dy <= sight_radius * sight_radius {
+                    // Check line of sight
+                    if self.has_line_of_sight(player_x, player_y, x, y) {
+                        self.visible_tiles.insert((x, y), true);
+                        self.explored_tiles.insert((x, y), true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Check if there's a clear line of sight between two points
+    pub fn has_line_of_sight(&self, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
+        // Bresenham's line algorithm for line of sight
+        let dx = (x2 - x1).abs();
+        let dy = (y2 - y1).abs();
+        let sx = if x1 < x2 { 1 } else { -1 };
+        let sy = if y1 < y2 { 1 } else { -1 };
+        let mut err = dx - dy;
+        
+        let mut x = x1;
+        let mut y = y1;
+        
+        loop {
+            // Check if current position blocks vision
+            if x != x1 || y != y1 { // Don't check starting position
+                if let Some(tile) = self.tiles.get(&(x, y)) {
+                    match tile {
+                        Tile::Wall | Tile::CaveWall | Tile::Mountain | Tile::Tree => return false,
+                        _ => {}
+                    }
+                }
+            }
+            
+            if x == x2 && y == y2 { break; }
+            
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+        }
+        
+        true
+    }
+
+    /// Check if a tile is currently visible
+    pub fn is_visible(&self, x: i32, y: i32) -> bool {
+        self.visible_tiles.get(&(x, y)).unwrap_or(&false).clone()
+    }
+
+    /// Check if a tile has been explored
+    pub fn is_explored(&self, x: i32, y: i32) -> bool {
+        self.explored_tiles.get(&(x, y)).unwrap_or(&false).clone()
+    }
+
+    /// Illuminate a room and all connected areas
+    pub fn illuminate_area(&mut self, room_id: u32) {
+        if let Some(room) = self.rooms.iter_mut().find(|r| r.id == room_id) {
+            if !room.is_illuminated {
+                room.is_illuminated = true;
+                self.illuminated_areas.insert(room_id, true);
+                
+                // Illuminate all connected rooms
+                let connected_rooms = room.connected_rooms.clone();
+                for connected_id in connected_rooms {
+                    self.illuminate_area(connected_id);
+                }
+            }
+        }
+    }
+
+    /// Check if an area is illuminated
+    pub fn is_area_illuminated(&self, room_id: u32) -> bool {
+        self.illuminated_areas.get(&room_id).unwrap_or(&false).clone()
+    }
+
+    /// Get the room ID for a given position
+    pub fn get_room_id(&self, x: i32, y: i32) -> Option<u32> {
+        self.room_positions.get(&(x, y)).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomType {
+    Rectangle,    // Standard rectangular room
+    Circle,       // Circular room
+    Cave,         // Cave-like room from cellular automata
+    Corridor,     // Corridor/hallway
+}
+
 #[derive(Debug, Clone)]
 pub struct Room {
     pub x: i32,
     pub y: i32,
     pub width: i32,
     pub height: i32,
-    pub id: u32, // Unique room identifier for exploration tracking
+    pub id: u32,
+    pub room_type: RoomType,
+    pub is_illuminated: bool,     // Whether this room/area is lit
+    pub connected_rooms: Vec<u32>, // IDs of directly connected rooms
 }

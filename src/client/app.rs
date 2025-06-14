@@ -201,6 +201,9 @@ impl App {
                 tiles: HashMap::new(),
                 rooms: Vec::new(),
                 room_positions: HashMap::new(),
+                visible_tiles: HashMap::new(),
+                explored_tiles: HashMap::new(),
+                illuminated_areas: HashMap::new(),
             },
             chunk_manager: None,
             multiplayer_chunks: HashMap::new(),
@@ -238,6 +241,9 @@ impl App {
             tiles: HashMap::new(),
             rooms: Vec::new(),
             room_positions: HashMap::new(),
+            visible_tiles: HashMap::new(),
+            explored_tiles: HashMap::new(),
+            illuminated_areas: HashMap::new(),
         };
         self.messages = vec!["Welcome to the infinite overworld! Explore and discover new terrain as you move.".to_string()];
     }
@@ -329,6 +335,11 @@ impl App {
                     self.player.max_hp = network_player.max_hp;
                     self.current_map_type = new_map_type;
                     
+                    // Sync exploration data from NetworkPlayer to local Player (for dungeon visibility)
+                    self.player.opened_doors = network_player.opened_doors.clone();
+                    self.player.explored_rooms = network_player.explored_rooms.clone();
+                    self.player.dungeon_entrance_pos = network_player.dungeon_entrance_pos;
+                    
                     // Handle map transitions in multiplayer
                     if old_map_type != new_map_type {
                         match new_map_type {
@@ -353,6 +364,9 @@ impl App {
                                     tiles: HashMap::new(),
                                     rooms: Vec::new(),
                                     room_positions: HashMap::new(),
+                                    visible_tiles: HashMap::new(),
+                                    explored_tiles: HashMap::new(),
+                                    illuminated_areas: HashMap::new(),
                                 };
                                 self.messages.push("You emerge from the dungeon into the overworld.".to_string());
                             }
@@ -403,6 +417,12 @@ impl App {
                         self.player.y = new_y;
                         self.turn_count += 1;
                         
+                        // Update lighting if in dungeon (player has a light source)
+                        if self.current_map_type == MapType::Dungeon {
+                            const LIGHT_RADIUS: i32 = 6; // Player's light radius
+                            self.game_map.update_lighting(new_x, new_y, LIGHT_RADIUS);
+                        }
+                        
                         // Send move to server
                         if let Some(ref client) = self.network_client {
                             client.send_move(dx, dy);
@@ -444,6 +464,12 @@ impl App {
                 self.player.x = new_x;
                 self.player.y = new_y;
                 self.turn_count += 1;
+                
+                // Update lighting if in dungeon (player has a light source)
+                if self.current_map_type == MapType::Dungeon {
+                    const LIGHT_RADIUS: i32 = 6; // Player's light radius
+                    self.game_map.update_lighting(new_x, new_y, LIGHT_RADIUS);
+                }
                 
                 // Handle door opening in dungeons
                 if self.current_map_type == MapType::Dungeon && tile == Tile::Door {
@@ -497,6 +523,10 @@ impl App {
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Dungeon;
                     
+                    // Initialize player lighting in the dungeon
+                    const LIGHT_RADIUS: i32 = 6; // Player's light radius
+                    self.game_map.update_lighting(spawn_x, spawn_y, LIGHT_RADIUS);
+                    
                     // Initialize exploration system for the new dungeon
                     GameLogic::initialize_dungeon_exploration(&self.game_map, &mut self.player);
                     self.messages.push("You descend into the dungeon...".to_string());
@@ -533,6 +563,9 @@ impl App {
                             tiles: HashMap::new(),
                             rooms: Vec::new(),
                             room_positions: HashMap::new(),
+                            visible_tiles: HashMap::new(),
+                            explored_tiles: HashMap::new(),
+                            illuminated_areas: HashMap::new(),
                         };
                         
                         // Use stored entrance position or fall back to default spawn

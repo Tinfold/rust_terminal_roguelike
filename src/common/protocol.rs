@@ -69,6 +69,9 @@ pub struct NetworkPlayer {
     pub color: (u8, u8, u8), // RGB color tuple for this player
     pub current_map_type: MapType, // Each player can be in a different map
     pub dungeon_entrance_pos: Option<(i32, i32)>, // Position of the dungeon entrance they came from
+    // Exploration tracking for dungeons
+    pub opened_doors: std::collections::HashSet<(i32, i32)>, // Positions of doors that have been opened
+    pub explored_rooms: std::collections::HashSet<u32>, // IDs of rooms that have been explored
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

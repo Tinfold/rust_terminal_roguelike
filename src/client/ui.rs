@@ -7,7 +7,6 @@ use ratatui::{
 };
 
 use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
-use rust_cli_roguelike::common::game_logic::GameLogic;
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
     match app.current_screen {
@@ -311,12 +310,26 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                 };
                 
                 if let Some(tile) = tile {
-                    // Check if tile should be visible (for dungeon exploration)
-                    if app.current_map_type == MapType::Dungeon && 
-                       !GameLogic::is_tile_visible(&app.game_map, &app.player, world_x, world_y) {
-                        // Show unexplored areas as dark/unknown
-                        spans.push(Span::styled("?".to_string(), Style::default().fg(Color::DarkGray)));
+                    // Check tile visibility using the new lighting system (for dungeons)
+                    if app.current_map_type == MapType::Dungeon {
+                        const LIGHT_RADIUS: i32 = 6; // Player's light radius
+                        let visibility_state = app.game_map.get_tile_visibility_state(
+                            app.player.x, app.player.y, world_x, world_y, LIGHT_RADIUS
+                        );
+                        
+                        if visibility_state.is_visible() {
+                            let brightness = visibility_state.get_brightness();
+                            let (base_style, character) = get_tile_style_and_char(tile);
+                            
+                            // Apply brightness to the tile color
+                            let modified_style = apply_brightness_to_style(base_style, brightness);
+                            spans.push(Span::styled(character.to_string(), modified_style));
+                        } else {
+                            // Hidden tile - show as dark space
+                            spans.push(Span::styled(" ".to_string(), Style::default().bg(Color::Black)));
+                        }
                     } else {
+                        // In overworld, all tiles are always visible at full brightness
                         let (style, character) = get_tile_style_and_char(tile);
                         spans.push(Span::styled(character.to_string(), style));
                     }
@@ -588,6 +601,18 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
             Style::default().fg(Color::Cyan).bg(Color::Black),
             '<'
         ),
+        Tile::CaveFloor => (
+            Style::default().fg(Color::Rgb(139, 119, 101)), // Sandy brown
+            '.'
+        ),
+        Tile::CaveWall => (
+            Style::default().fg(Color::Rgb(105, 105, 105)).bg(Color::Rgb(64, 64, 64)), // Dim gray
+            '#'
+        ),
+        Tile::Corridor => (
+            Style::default().fg(Color::Rgb(169, 169, 169)), // Dark gray
+            '.'
+        ),
     }
 }
 
@@ -722,4 +747,70 @@ fn render_chat_input_bar(frame: &mut Frame, app: &App, area: Rect) {
             .title_style(Style::default().fg(Color::Yellow)));
     
     frame.render_widget(chat_input_widget, area);
+}
+
+/// Apply brightness to a style for the lighting system
+fn apply_brightness_to_style(base_style: Style, brightness: f32) -> Style {
+    // Extract the original foreground color
+    let original_color = base_style.fg.unwrap_or(Color::White);
+    
+    // Apply brightness by modifying the color
+    let modified_color = match original_color {
+        Color::Rgb(r, g, b) => {
+            let new_r = ((r as f32 * brightness) as u8).min(255);
+            let new_g = ((g as f32 * brightness) as u8).min(255);
+            let new_b = ((b as f32 * brightness) as u8).min(255);
+            Color::Rgb(new_r, new_g, new_b)
+        }
+        Color::Reset => Color::Reset,
+        Color::Black => Color::Black,
+        Color::Red => {
+            if brightness > 0.8 { Color::Red }
+            else if brightness > 0.5 { Color::from_u32(0x800000) } // Dark red
+            else { Color::from_u32(0x400000) } // Very dark red
+        }
+        Color::Green => {
+            if brightness > 0.8 { Color::Green }
+            else if brightness > 0.5 { Color::from_u32(0x008000) } // Dark green
+            else { Color::from_u32(0x004000) } // Very dark green
+        }
+        Color::Yellow => {
+            if brightness > 0.8 { Color::Yellow }
+            else if brightness > 0.5 { Color::from_u32(0x808000) } // Dark yellow
+            else { Color::from_u32(0x404000) } // Very dark yellow
+        }
+        Color::Blue => {
+            if brightness > 0.8 { Color::Blue }
+            else if brightness > 0.5 { Color::from_u32(0x000080) } // Dark blue
+            else { Color::from_u32(0x000040) } // Very dark blue
+        }
+        Color::Magenta => {
+            if brightness > 0.8 { Color::Magenta }
+            else if brightness > 0.5 { Color::from_u32(0x800080) } // Dark magenta
+            else { Color::from_u32(0x400040) } // Very dark magenta
+        }
+        Color::Cyan => {
+            if brightness > 0.8 { Color::Cyan }
+            else if brightness > 0.5 { Color::from_u32(0x008080) } // Dark cyan
+            else { Color::from_u32(0x004040) } // Very dark cyan
+        }
+        Color::White => {
+            if brightness > 0.8 { Color::White }
+            else if brightness > 0.5 { Color::Gray }
+            else { Color::DarkGray }
+        }
+        Color::Gray => {
+            if brightness > 0.5 { Color::Gray }
+            else { Color::DarkGray }
+        }
+        Color::DarkGray => Color::DarkGray,
+        _ => {
+            // For other colors, try to dim them
+            if brightness > 0.5 { original_color }
+            else { Color::DarkGray }
+        }
+    };
+    
+    // Return the style with the modified color
+    Style::default().fg(modified_color).bg(base_style.bg.unwrap_or(Color::Reset))
 }

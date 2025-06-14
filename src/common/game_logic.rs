@@ -84,6 +84,9 @@ impl GameLogic {
             tiles,
             rooms: Vec::new(), // Network maps don't include room data currently
             room_positions: HashMap::new(),
+            visible_tiles: HashMap::new(),
+            explored_tiles: HashMap::new(),
+            illuminated_areas: HashMap::new(),
         }
     }
 
@@ -377,6 +380,140 @@ impl GameLogic {
 
     /// Check if a corridor is connected to an explored area through opened doors
     fn is_corridor_connected_to_explored_area(game_map: &GameMap, player: &Player, start_x: i32, start_y: i32) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back((start_x, start_y));
+        
+        while let Some((x, y)) = queue.pop_front() {
+            if visited.contains(&(x, y)) {
+                continue;
+            }
+            visited.insert((x, y));
+            
+            // Check all adjacent positions
+            for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + dx;
+                let ny = y + dy;
+                
+                if visited.contains(&(nx, ny)) {
+                    continue;
+                }
+                
+                // Check if adjacent to an explored room
+                if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                    if player.explored_rooms.contains(&room_id) {
+                        return true;
+                    }
+                }
+                
+                // Check if there's a walkable path
+                if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
+                    match tile {
+                        Tile::Floor => {
+                            // If it's a corridor, continue searching
+                            if game_map.room_positions.get(&(nx, ny)).is_none() {
+                                queue.push_back((nx, ny));
+                            }
+                        },
+                        Tile::Door => {
+                            // If it's an opened door, continue searching through it
+                            if player.opened_doors.contains(&(nx, ny)) {
+                                queue.push_back((nx, ny));
+                            }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+        
+        false
+    }
+
+    /// Initialize player exploration for a new dungeon (NetworkPlayer version)
+    pub fn initialize_network_player_dungeon_exploration(game_map: &GameMap, player: &mut super::protocol::NetworkPlayer) {
+        // Clear previous exploration data
+        player.opened_doors.clear();
+        player.explored_rooms.clear();
+        
+        // Find the starting room (containing the dungeon exit)
+        for (pos, &tile) in &game_map.tiles {
+            if tile == Tile::DungeonExit {
+                if let Some(&room_id) = game_map.room_positions.get(pos) {
+                    player.explored_rooms.insert(room_id);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Check if a tile should be visible based on room exploration (NetworkPlayer version)
+    pub fn is_tile_visible_network_player(game_map: &GameMap, player: &super::protocol::NetworkPlayer, x: i32, y: i32) -> bool {
+        // In overworld, all tiles are always visible
+        if game_map.rooms.is_empty() {
+            return true;
+        }
+        
+        // Check if position is in a room
+        if let Some(&room_id) = game_map.room_positions.get(&(x, y)) {
+            // Tile is visible if the room has been explored
+            return player.explored_rooms.contains(&room_id);
+        }
+        
+        // Check if position is a corridor (not in any room)
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::Floor {
+                // For corridors, check if any adjacent explored room makes it visible
+                for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                        if player.explored_rooms.contains(&room_id) {
+                            return true;
+                        }
+                    }
+                }
+                
+                // Also check if connected to the corridor network through opened doors
+                if Self::is_corridor_connected_to_explored_area_network_player(game_map, player, x, y) {
+                    return true;
+                }
+            }
+        }
+        
+        // Doors are visible if they connect to an explored room
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::Door {
+                // Check if door has been opened
+                if player.opened_doors.contains(&(x, y)) {
+                    return true;
+                }
+                
+                // Check if door is adjacent to an explored room
+                for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx;
+                    let ny = y + dy;
+                    if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                        if player.explored_rooms.contains(&room_id) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Dungeon exit is always visible
+        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+            if tile == Tile::DungeonExit {
+                return true;
+            }
+        }
+        
+        false
+    }
+
+    /// Check if a corridor is connected to an explored area through opened doors (NetworkPlayer version)
+    fn is_corridor_connected_to_explored_area_network_player(game_map: &GameMap, player: &super::protocol::NetworkPlayer, start_x: i32, start_y: i32) -> bool {
         let mut visited = std::collections::HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         queue.push_back((start_x, start_y));
