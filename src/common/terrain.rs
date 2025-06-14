@@ -373,6 +373,57 @@ impl GameMap {
                 if let Some(tile) = self.tiles.get(&(x, y)) {
                     match tile {
                         Tile::Wall | Tile::CaveWall | Tile::Mountain | Tile::Tree => return false,
+                        Tile::Door => {
+                            // Doors block vision - this method doesn't know about opened doors
+                            // The caller should use has_line_of_sight_with_doors for door-aware checks
+                            return false;
+                        },
+                        _ => {}
+                    }
+                }
+            }
+            
+            if x == x2 && y == y2 { break; }
+            
+            let e2 = 2 * err;
+            if e2 > -dy {
+                err -= dy;
+                x += sx;
+            }
+            if e2 < dx {
+                err += dx;
+                y += sy;
+            }
+        }
+        
+        true
+    }
+
+    /// Check line of sight with door state awareness
+    pub fn has_line_of_sight_with_doors(&self, x1: i32, y1: i32, x2: i32, y2: i32, opened_doors: &std::collections::HashSet<(i32, i32)>) -> bool {
+        // Bresenham's line algorithm for line of sight
+        let dx = (x2 - x1).abs();
+        let dy = (y2 - y1).abs();
+        let sx = if x1 < x2 { 1 } else { -1 };
+        let sy = if y1 < y2 { 1 } else { -1 };
+        let mut err = dx - dy;
+        
+        let mut x = x1;
+        let mut y = y1;
+        
+        loop {
+            // Check if current position blocks vision
+            if x != x1 || y != y1 { // Don't check starting position
+                if let Some(tile) = self.tiles.get(&(x, y)) {
+                    match tile {
+                        Tile::Wall | Tile::CaveWall | Tile::Mountain | Tile::Tree => return false,
+                        Tile::Door => {
+                            // Check if this door has been opened
+                            if !opened_doors.contains(&(x, y)) {
+                                return false; // Closed door blocks vision
+                            }
+                            // Opened doors don't block vision
+                        },
                         _ => {}
                     }
                 }

@@ -1,10 +1,205 @@
 use crate::common::terrain::{GameMap, Tile, Room, RoomType};
+use std::collections::HashSet;
 
-/// Simple dungeon generator with player lighting system
+/// BSP-based dungeon generator with player lighting system
 pub struct DungeonGenerator;
 
+/// BSP Node for recursive dungeon generation
+#[derive(Debug, Clone)]
+struct BSPNode {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    left: Option<Box<BSPNode>>,
+    right: Option<Box<BSPNode>>,
+    room: Option<Room>,
+    id: u32,
+}
+
+impl BSPNode {
+    fn new(x: i32, y: i32, width: i32, height: i32, id: u32) -> Self {
+        BSPNode {
+            x,
+            y,
+            width,
+            height,
+            left: None,
+            right: None,
+            room: None,
+            id,
+        }
+    }
+
+    /// Check if this node can be split
+    fn can_split(&self, min_size: i32) -> bool {
+        self.width > min_size * 2 || self.height > min_size * 2
+    }
+
+    /// Split this node into two child nodes
+    fn split(&mut self, next_id: &mut u32, min_size: i32) -> bool {
+        if !self.can_split(min_size) {
+            return false;
+        }
+
+        // Determine split direction - prefer splitting the longer dimension
+        let split_horizontal = if self.width > self.height {
+            false // Split vertically (create left/right children)
+        } else if self.height > self.width {
+            true // Split horizontally (create top/bottom children)
+        } else {
+            // Equal dimensions - random choice
+            *next_id % 2 == 0
+        };
+
+        let (max_split, min_split_size) = if split_horizontal {
+            (self.height - min_size, min_size)
+        } else {
+            (self.width - min_size, min_size)
+        };
+
+        if max_split <= min_split_size {
+            return false;
+        }
+
+        // Choose split position (avoid splitting too close to edges)
+        let split_pos = min_split_size + ((*next_id * 17) % (max_split - min_split_size) as u32) as i32;
+
+        if split_horizontal {
+            // Horizontal split - create top and bottom children
+            self.left = Some(Box::new(BSPNode::new(
+                self.x,
+                self.y,
+                self.width,
+                split_pos,
+                *next_id,
+            )));
+            *next_id += 1;
+            
+            self.right = Some(Box::new(BSPNode::new(
+                self.x,
+                self.y + split_pos,
+                self.width,
+                self.height - split_pos,
+                *next_id,
+            )));
+            *next_id += 1;
+        } else {
+            // Vertical split - create left and right children
+            self.left = Some(Box::new(BSPNode::new(
+                self.x,
+                self.y,
+                split_pos,
+                self.height,
+                *next_id,
+            )));
+            *next_id += 1;
+            
+            self.right = Some(Box::new(BSPNode::new(
+                self.x + split_pos,
+                self.y,
+                self.width - split_pos,
+                self.height,
+                *next_id,
+            )));
+            *next_id += 1;
+        }
+
+        true
+    }
+
+    /// Create rooms in leaf nodes
+    fn create_rooms(&mut self, min_room_size: i32, max_room_size: i32) {
+        if let (Some(ref mut left), Some(ref mut right)) = (&mut self.left, &mut self.right) {
+            // This is an internal node - recurse to children
+            left.create_rooms(min_room_size, max_room_size);
+            right.create_rooms(min_room_size, max_room_size);
+        } else {
+            // This is a leaf node - create a room
+            let margin = 2; // Leave some space from the edges
+            let max_width = (self.width - margin * 2).min(max_room_size);
+            let max_height = (self.height - margin * 2).min(max_room_size);
+            
+            if max_width >= min_room_size && max_height >= min_room_size {
+                let room_width = min_room_size + (self.id * 13) as i32 % (max_width - min_room_size + 1);
+                let room_height = min_room_size + (self.id * 19) as i32 % (max_height - min_room_size + 1);
+                
+                let room_x = self.x + margin + (self.id * 23) as i32 % (self.width - room_width - margin * 2 + 1);
+                let room_y = self.y + margin + (self.id * 29) as i32 % (self.height - room_height - margin * 2 + 1);
+                
+                self.room = Some(Room {
+                    x: room_x,
+                    y: room_y,
+                    width: room_width,
+                    height: room_height,
+                    id: self.id,
+                    room_type: RoomType::Rectangle,
+                    is_illuminated: false,
+                    connected_rooms: Vec::new(),
+                });
+            }
+        }
+    }
+
+    /// Get all rooms from this node and its children
+    fn get_rooms(&self, rooms: &mut Vec<Room>) {
+        if let Some(ref room) = self.room {
+            rooms.push(room.clone());
+        }
+        
+        if let Some(ref left) = self.left {
+            left.get_rooms(rooms);
+        }
+        
+        if let Some(ref right) = self.right {
+            right.get_rooms(rooms);
+        }
+    }
+
+    /// Get center point of this node's room (if it has one)
+    fn get_room_center(&self) -> Option<(i32, i32)> {
+        if let Some(ref room) = self.room {
+            Some((room.x + room.width / 2, room.y + room.height / 2))
+        } else {
+            None
+        }
+    }
+
+    /// Get the center point for connecting to other nodes
+    fn get_connection_center(&self) -> (i32, i32) {
+        if let Some(center) = self.get_room_center() {
+            center
+        } else {
+            // For internal nodes, find the center between child connection points
+            match (&self.left, &self.right) {
+                (Some(left), Some(right)) => {
+                    let left_center = left.get_connection_center();
+                    let right_center = right.get_connection_center();
+                    ((left_center.0 + right_center.0) / 2, (left_center.1 + right_center.1) / 2)
+                },
+                _ => (self.x + self.width / 2, self.y + self.height / 2)
+            }
+        }
+    }
+
+    /// Connect this node's children with corridors
+    fn connect_children(&self, game_map: &mut GameMap) {
+        if let (Some(ref left), Some(ref right)) = (&self.left, &self.right) {
+            // First, recursively connect children
+            left.connect_children(game_map);
+            right.connect_children(game_map);
+            
+            // Then connect the two subtrees
+            let left_center = left.get_connection_center();
+            let right_center = right.get_connection_center();
+            
+            DungeonGenerator::carve_l_shaped_corridor(game_map, left_center, right_center);
+        }
+    }
+}
+
 impl DungeonGenerator {
-    /// Generate a basic dungeon with simple rooms and corridors
+    /// Generate a BSP-based dungeon with rooms and corridors
     pub fn generate_dungeon(width: i32, height: i32) -> GameMap {
         let mut game_map = GameMap::new(width, height);
         
@@ -15,53 +210,58 @@ impl DungeonGenerator {
             }
         }
         
-        // Create a few simple rectangular rooms
-        let rooms = vec![
-            Room {
-                x: 5,
-                y: 5,
-                width: 8,
-                height: 6,
-                id: 0,
-                room_type: RoomType::Rectangle,
-                is_illuminated: false,
-                connected_rooms: vec![1],
-            },
-            Room {
-                x: 20,
-                y: 8,
-                width: 10,
-                height: 8,
-                id: 1,
-                room_type: RoomType::Rectangle,
-                is_illuminated: false,
-                connected_rooms: vec![0, 2],
-            },
-            Room {
-                x: 15,
-                y: 20,
-                width: 6,
-                height: 5,
-                id: 2,
-                room_type: RoomType::Rectangle,
-                is_illuminated: false,
-                connected_rooms: vec![1],
-            },
-        ];
+        // Create BSP tree
+        let mut root = BSPNode::new(1, 1, width - 2, height - 2, 0);
+        let mut next_id = 1;
+        
+        // Split the space recursively
+        Self::split_node_recursive(&mut root, &mut next_id, 8, 6); // min_size=8, depth=6
+        
+        // Create rooms in leaf nodes
+        root.create_rooms(4, 12); // min_room_size=4, max_room_size=12
+        
+        // Get all rooms
+        let mut rooms = Vec::new();
+        root.get_rooms(&mut rooms);
         
         // Carve out rooms
         for room in &rooms {
             Self::carve_room(&mut game_map, room);
         }
         
-        // Connect rooms with corridors
-        Self::connect_rooms(&mut game_map, &rooms);
+        // Connect rooms with corridors using BSP structure
+        root.connect_children(&mut game_map);
+        
+        // Add doors at corridor-room intersections
+        Self::add_doors(&mut game_map, &rooms);
         
         // Add entrance and exit
-        game_map.tiles.insert((6, 5), Tile::DungeonExit); // Entrance to room 0
+        if let Some(first_room) = rooms.first() {
+            game_map.tiles.insert((first_room.x + 1, first_room.y + 1), Tile::DungeonExit);
+        }
         
-        game_map.rooms = rooms;
+        // Update room connections based on actual layout
+        let mut connected_rooms = rooms;
+        Self::update_room_connections(&mut connected_rooms, &game_map);
+        
+        game_map.rooms = connected_rooms;
         game_map
+    }
+
+    /// Recursively split BSP nodes
+    fn split_node_recursive(node: &mut BSPNode, next_id: &mut u32, min_size: i32, max_depth: i32) {
+        if max_depth <= 0 || !node.can_split(min_size) {
+            return;
+        }
+        
+        if node.split(next_id, min_size) {
+            if let Some(ref mut left) = node.left {
+                Self::split_node_recursive(left, next_id, min_size, max_depth - 1);
+            }
+            if let Some(ref mut right) = node.right {
+                Self::split_node_recursive(right, next_id, min_size, max_depth - 1);
+            }
+        }
     }
     
     /// Carve out a rectangular room
@@ -76,33 +276,138 @@ impl DungeonGenerator {
         }
     }
     
-    /// Connect rooms with simple corridors
-    fn connect_rooms(game_map: &mut GameMap, _rooms: &[Room]) {
-        // Connect room 0 to room 1
-        Self::carve_corridor(game_map, 13, 8, 20, 8); // Horizontal corridor
+    /// Carve an L-shaped corridor between two points
+    fn carve_l_shaped_corridor(game_map: &mut GameMap, from: (i32, i32), to: (i32, i32)) {
+        let (x1, y1) = from;
+        let (x2, y2) = to;
         
-        // Connect room 1 to room 2  
-        Self::carve_corridor(game_map, 25, 16, 25, 20); // Vertical corridor
-        Self::carve_corridor(game_map, 21, 20, 25, 20); // Horizontal corridor
+        // Choose corner point - sometimes go horizontal first, sometimes vertical first
+        let corner_horizontal_first = (x1 + y1 + x2 + y2) % 2 == 0;
+        
+        if corner_horizontal_first {
+            // Go horizontal first, then vertical
+            Self::carve_corridor_line(game_map, x1, y1, x2, y1);
+            Self::carve_corridor_line(game_map, x2, y1, x2, y2);
+        } else {
+            // Go vertical first, then horizontal
+            Self::carve_corridor_line(game_map, x1, y1, x1, y2);
+            Self::carve_corridor_line(game_map, x1, y2, x2, y2);
+        }
     }
     
-    /// Carve a simple corridor between two points
-    fn carve_corridor(game_map: &mut GameMap, x1: i32, y1: i32, x2: i32, y2: i32) {
+    /// Carve a straight corridor line between two points
+    fn carve_corridor_line(game_map: &mut GameMap, x1: i32, y1: i32, x2: i32, y2: i32) {
         let mut x = x1;
         let mut y = y1;
         
-        // Go horizontal first, then vertical
-        while x != x2 {
-            if x < x2 { x += 1; } else { x -= 1; }
+        while x != x2 || y != y2 {
+            // Only carve if it's not already a room floor
             if x > 0 && y > 0 && x < game_map.width - 1 && y < game_map.height - 1 {
-                game_map.tiles.insert((x, y), Tile::Corridor);
+                if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+                    if tile == Tile::Wall {
+                        game_map.tiles.insert((x, y), Tile::Corridor);
+                    }
+                }
+            }
+            
+            // Move towards the target
+            if x < x2 {
+                x += 1;
+            } else if x > x2 {
+                x -= 1;
+            } else if y < y2 {
+                y += 1;
+            } else if y > y2 {
+                y -= 1;
+            }
+        }
+    }
+    
+    /// Add doors at room-corridor intersections
+    fn add_doors(game_map: &mut GameMap, rooms: &[Room]) {
+        let mut door_positions = HashSet::new();
+        
+        // Find all positions where corridors meet rooms
+        for room in rooms {
+            // Check the perimeter of each room
+            for x in (room.x - 1)..=(room.x + room.width) {
+                for y in (room.y - 1)..=(room.y + room.height) {
+                    // Check if this position is on the room's border
+                    let on_border = (x == room.x - 1 || x == room.x + room.width ||
+                                     y == room.y - 1 || y == room.y + room.height) &&
+                                    x >= room.x - 1 && x <= room.x + room.width &&
+                                    y >= room.y - 1 && y <= room.y + room.height;
+                    
+                    if on_border {
+                        // Check if there's a corridor adjacent to the room
+                        if let Some(&tile) = game_map.tiles.get(&(x, y)) {
+                            if tile == Tile::Corridor {
+                                // Check if there's a room floor adjacent
+                                let adjacent_positions = [
+                                    (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)
+                                ];
+                                
+                                for &(ax, ay) in &adjacent_positions {
+                                    if let Some(&adj_tile) = game_map.tiles.get(&(ax, ay)) {
+                                        if adj_tile == Tile::Floor {
+                                            if let Some(&room_id) = game_map.room_positions.get(&(ax, ay)) {
+                                                if room_id == room.id {
+                                                    // This corridor connects to this room - place a door
+                                                    door_positions.insert((x, y));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         
-        while y != y2 {
-            if y < y2 { y += 1; } else { y -= 1; }
-            if x > 0 && y > 0 && x < game_map.width - 1 && y < game_map.height - 1 {
-                game_map.tiles.insert((x, y), Tile::Corridor);
+        // Place the doors
+        for &(x, y) in &door_positions {
+            game_map.tiles.insert((x, y), Tile::Door);
+        }
+    }
+    
+    /// Update room connections based on door placement
+    fn update_room_connections(rooms: &mut Vec<Room>, game_map: &GameMap) {
+        // Clear existing connections
+        for room in rooms.iter_mut() {
+            room.connected_rooms.clear();
+        }
+        
+        // Find connections through doors
+        for &(door_x, door_y) in game_map.tiles.iter().filter_map(|(pos, tile)| {
+            if *tile == Tile::Door { Some(pos) } else { None }
+        }) {
+            let mut connected_room_ids = Vec::new();
+            
+            // Check adjacent positions for rooms
+            for &(dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let adj_x = door_x + dx;
+                let adj_y = door_y + dy;
+                
+                if let Some(&room_id) = game_map.room_positions.get(&(adj_x, adj_y)) {
+                    if !connected_room_ids.contains(&room_id) {
+                        connected_room_ids.push(room_id);
+                    }
+                }
+            }
+            
+            // Connect the rooms bidirectionally
+            for &room_id_1 in &connected_room_ids {
+                for &room_id_2 in &connected_room_ids {
+                    if room_id_1 != room_id_2 {
+                        if let Some(room_1) = rooms.iter_mut().find(|r| r.id == room_id_1) {
+                            if !room_1.connected_rooms.contains(&room_id_2) {
+                                room_1.connected_rooms.push(room_id_2);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -185,8 +490,8 @@ impl LightLevel {
 
 /// Enhanced GameMap with lighting
 impl GameMap {
-    /// Update player light and visibility
-    pub fn update_lighting(&mut self, player_x: i32, player_y: i32, light_radius: i32) {
+    /// Update player light and visibility with door awareness
+    pub fn update_lighting_with_doors(&mut self, player_x: i32, player_y: i32, light_radius: i32, opened_doors: &std::collections::HashSet<(i32, i32)>) {
         // Clear current visibility and lighting
         self.visible_tiles.clear();
         
@@ -208,8 +513,8 @@ impl GameMap {
                 
                 // Only light tiles within radius
                 if distance <= light_radius as f32 {
-                    // Check line of sight
-                    if self.has_line_of_sight(player_x, player_y, x, y) {
+                    // Check line of sight with door awareness
+                    if self.has_line_of_sight_with_doors(player_x, player_y, x, y, opened_doors) {
                         // Calculate brightness based on distance
                         let brightness = Self::calculate_brightness(distance, light_radius as f32);
                         
@@ -218,14 +523,18 @@ impl GameMap {
                             self.visible_tiles.insert((x, y), true);
                             self.explored_tiles.insert((x, y), true);
                         }
-                        
-                        // Store light level for rendering
-                        // We'll use a simple approach: store brightness in a separate map
-                        // For now, we'll just mark as visible/invisible
                     }
                 }
             }
         }
+    }
+
+    /// Update player light and visibility (legacy method - uses door-aware version)
+    pub fn update_lighting(&mut self, player_x: i32, player_y: i32, light_radius: i32) {
+        // Use empty set for opened doors - this maintains backwards compatibility
+        // but doors will block light by default
+        let empty_doors = std::collections::HashSet::new();
+        self.update_lighting_with_doors(player_x, player_y, light_radius, &empty_doors);
     }
     
     /// Calculate brightness based on distance from light source
@@ -241,18 +550,24 @@ impl GameMap {
         }
     }
     
-    /// Get the light level at a specific position
-    pub fn get_light_level(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32) -> LightLevel {
+    /// Get the light level at a specific position with door awareness
+    pub fn get_light_level_with_doors(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32, opened_doors: &std::collections::HashSet<(i32, i32)>) -> LightLevel {
         let dx = (x - player_x) as f32;
         let dy = (y - player_y) as f32;
         let distance = (dx * dx + dy * dy).sqrt();
         
-        if distance <= light_radius as f32 && self.has_line_of_sight(player_x, player_y, x, y) {
+        if distance <= light_radius as f32 && self.has_line_of_sight_with_doors(player_x, player_y, x, y, opened_doors) {
             let brightness = Self::calculate_brightness(distance, light_radius as f32);
             LightLevel::new(brightness)
         } else {
             LightLevel::dark()
         }
+    }
+
+    /// Get the light level at a specific position (legacy method)
+    pub fn get_light_level(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32) -> LightLevel {
+        let empty_doors = std::collections::HashSet::new();
+        self.get_light_level_with_doors(player_x, player_y, x, y, light_radius, &empty_doors)
     }
     
     /// Check if a tile should be rendered (visible or explored)
@@ -260,16 +575,22 @@ impl GameMap {
         self.is_visible(x, y) || self.is_explored(x, y)
     }
     
-    /// Get rendering style based on visibility and light level
-    pub fn get_tile_visibility_state(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32) -> TileVisibility {
+    /// Get rendering style based on visibility and light level with door awareness
+    pub fn get_tile_visibility_state_with_doors(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32, opened_doors: &std::collections::HashSet<(i32, i32)>) -> TileVisibility {
         if self.is_visible(x, y) {
-            let light_level = self.get_light_level(player_x, player_y, x, y, light_radius);
+            let light_level = self.get_light_level_with_doors(player_x, player_y, x, y, light_radius, opened_doors);
             TileVisibility::Lit(light_level)
         } else if self.is_explored(x, y) {
             TileVisibility::Remembered
         } else {
             TileVisibility::Hidden
         }
+    }
+
+    /// Get rendering style based on visibility and light level (legacy method)
+    pub fn get_tile_visibility_state(&self, player_x: i32, player_y: i32, x: i32, y: i32, light_radius: i32) -> TileVisibility {
+        let empty_doors = std::collections::HashSet::new();
+        self.get_tile_visibility_state_with_doors(player_x, player_y, x, y, light_radius, &empty_doors)
     }
 }
 

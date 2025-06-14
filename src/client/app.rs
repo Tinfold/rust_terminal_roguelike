@@ -468,13 +468,17 @@ impl App {
                 // Update lighting if in dungeon (player has a light source)
                 if self.current_map_type == MapType::Dungeon {
                     const LIGHT_RADIUS: i32 = 6; // Player's light radius
-                    self.game_map.update_lighting(new_x, new_y, LIGHT_RADIUS);
+                    self.game_map.update_lighting_with_doors(new_x, new_y, LIGHT_RADIUS, &self.player.opened_doors);
                 }
                 
                 // Handle door opening in dungeons
                 if self.current_map_type == MapType::Dungeon && tile == Tile::Door {
                     if GameLogic::open_door(&self.game_map, &mut self.player, new_x, new_y) {
                         self.messages.push("You open the door and reveal new areas!".to_string());
+                        
+                        // Update lighting again after opening door to reveal what's behind it
+                        const LIGHT_RADIUS: i32 = 6;
+                        self.game_map.update_lighting_with_doors(new_x, new_y, LIGHT_RADIUS, &self.player.opened_doors);
                     }
                 }
                 
@@ -523,9 +527,9 @@ impl App {
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Dungeon;
                     
-                    // Initialize player lighting in the dungeon
+                    // Initialize player lighting in the dungeon with door awareness
                     const LIGHT_RADIUS: i32 = 6; // Player's light radius
-                    self.game_map.update_lighting(spawn_x, spawn_y, LIGHT_RADIUS);
+                    self.game_map.update_lighting_with_doors(spawn_x, spawn_y, LIGHT_RADIUS, &self.player.opened_doors);
                     
                     // Initialize exploration system for the new dungeon
                     GameLogic::initialize_dungeon_exploration(&self.game_map, &mut self.player);

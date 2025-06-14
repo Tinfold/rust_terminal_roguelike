@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use super::protocol::{NetworkGameMap, coord_to_string, string_to_coord};
 use super::constants::GameConstants;
 use super::terrain::TerrainGenerator;
-use super::chunk::ChunkManager;
 use super::dungeon::DungeonGenerator;
 
 // Re-export common types that both client and server need
