@@ -68,6 +68,7 @@ This opens the main menu where you can choose:
 - `+` Road (clear path)
 - `V` Village (interactive)
 - `D` Dungeon Entrance
+- `<` Dungeon Exit (inside dungeons, serves as entrance/exit)
 - `@` Player (you - yellow)
 - `@` Other Players (cyan in multiplayer)
 

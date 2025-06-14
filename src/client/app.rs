@@ -25,6 +25,7 @@ pub struct NetworkClient {
     pub game_state: Option<GameState>,
     pub messages: Vec<String>,
     pub multiplayer_chunks: HashMap<(i32, i32), HashMap<(i32, i32), Tile>>, // For multiplayer chunk storage
+    pub dungeon_map: Option<GameMap>, // Store the current dungeon map from server
 }
 
 impl NetworkClient {
@@ -69,6 +70,12 @@ impl NetworkClient {
                         }
                         self.multiplayer_chunks.insert((chunk.chunk_x, chunk.chunk_y), chunk_tiles);
                     }
+                }
+                ServerMessage::DungeonData { dungeon_map } => {
+                    // Convert NetworkGameMap to GameMap and store it
+                    let game_map = GameLogic::network_map_to_game(&dungeon_map);
+                    self.dungeon_map = Some(game_map);
+                    self.messages.push("Received dungeon map from server".to_string());
                 }
             }
         }
@@ -117,6 +124,10 @@ impl NetworkClient {
 
     pub fn request_chunks(&self, chunks: Vec<(i32, i32)>) {
         let _ = self.sender.send(ClientMessage::RequestChunks { chunks });
+    }
+
+    pub fn send_request_dungeon_data(&self) {
+        let _ = self.sender.send(ClientMessage::RequestDungeonData);
     }
 }
 
@@ -180,6 +191,7 @@ impl App {
                 hp: 20,
                 max_hp: 20,
                 symbol: '@',
+                dungeon_entrance_pos: None,
             },
             game_map: GameMap {
                 width: 0,
@@ -237,6 +249,7 @@ impl App {
     pub fn process_network_messages(&mut self) {
         let mut game_state_update = None;
         let mut new_messages = Vec::new();
+        let mut dungeon_map_update = None;
         
         if let Some(ref mut client) = self.network_client {
             client.process_messages();
@@ -246,6 +259,12 @@ impl App {
                 game_state_update = Some(game_state.clone());
             }
             
+            // Check for dungeon map update
+            if let Some(ref dungeon_map) = client.dungeon_map {
+                dungeon_map_update = Some(dungeon_map.clone());
+                client.dungeon_map = None; // Clear it after taking
+            }
+            
             // Collect new messages
             new_messages.extend(client.messages.drain(..));
         }
@@ -253,6 +272,13 @@ impl App {
         // Apply updates
         if let Some(state) = game_state_update {
             self.update_from_network_state(&state);
+        }
+        
+        // Apply dungeon map update
+        if let Some(dungeon_map) = dungeon_map_update {
+            self.game_map = dungeon_map;
+            self.chunk_manager = None; // Disable chunk manager in dungeons
+            self.messages.push("Entered dungeon from multiplayer server".to_string());
         }
         
         // Update messages and extract chat messages
@@ -444,11 +470,14 @@ impl App {
                 };
                 
                 if at_entrance {
-                    // Switch to traditional dungeon map for now
-                    // TODO: Could also implement infinite dungeon generation
-                    self.game_map = GameLogic::generate_dungeon_map();
+                    // Store the entrance position before entering the dungeon
+                    let entrance_pos = (self.player.x, self.player.y);
+                    self.player.dungeon_entrance_pos = Some(entrance_pos);
+                    
+                    // Generate a unique dungeon based on entrance position
+                    self.game_map = GameLogic::generate_dungeon_map_for_entrance(entrance_pos.0, entrance_pos.1);
                     self.chunk_manager = None; // Disable chunk manager in dungeons
-                    let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
+                    let (spawn_x, spawn_y) = GameLogic::get_safe_dungeon_spawn_position(&self.game_map);
                     self.player.x = spawn_x;
                     self.player.y = spawn_y;
                     self.current_map_type = MapType::Dungeon;
@@ -460,6 +489,7 @@ impl App {
             GameMode::MultiPlayer => {
                 if let Some(ref client) = self.network_client {
                     client.send_enter_dungeon();
+                    // The server will automatically send dungeon data when we enter
                 }
             }
         }
@@ -469,25 +499,34 @@ impl App {
         match self.game_mode {
             GameMode::SinglePlayer => {
                 if self.current_map_type == MapType::Dungeon {
-                    // Re-enable infinite terrain when returning to overworld
-                    let seed = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs() as u32;
-                    self.chunk_manager = Some(GameLogic::create_chunk_manager(seed));
-                    
-                    // Clear the old finite map
-                    self.game_map = GameMap {
-                        width: 0,
-                        height: 0,
-                        tiles: HashMap::new(),
-                    };
-                    
-                    let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
-                    self.player.x = spawn_x;
-                    self.player.y = spawn_y;
-                    self.current_map_type = MapType::Overworld;
-                    self.messages.push("You emerge from the dungeon into the infinite overworld.".to_string());
+                    // Check if player is at a dungeon exit
+                    if GameLogic::is_at_dungeon_exit(&self.game_map, self.player.x, self.player.y) {
+                        // Re-enable infinite terrain when returning to overworld
+                        let seed = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as u32;
+                        self.chunk_manager = Some(GameLogic::create_chunk_manager(seed));
+                        
+                        // Clear the old finite map
+                        self.game_map = GameMap {
+                            width: 0,
+                            height: 0,
+                            tiles: HashMap::new(),
+                        };
+                        
+                        // Use stored entrance position or fall back to default spawn
+                        let (spawn_x, spawn_y) = self.player.dungeon_entrance_pos
+                            .unwrap_or_else(|| GameLogic::get_overworld_spawn_position());
+                        
+                        self.player.x = spawn_x;
+                        self.player.y = spawn_y;
+                        self.player.dungeon_entrance_pos = None; // Clear the stored entrance position
+                        self.current_map_type = MapType::Overworld;
+                        self.messages.push("You emerge from the dungeon into the infinite overworld.".to_string());
+                    } else {
+                        self.messages.push("You must be at the dungeon entrance (marked with '<') to exit.".to_string());
+                    }
                 } else {
                     self.messages.push("You're not in a dungeon.".to_string());
                 }
@@ -497,7 +536,8 @@ impl App {
                     client.send_exit_dungeon();
                 }
             }
-        }    }
+        }
+    }
     
     pub fn open_inventory(&mut self) {
         self.current_screen = CurrentScreen::Inventory;

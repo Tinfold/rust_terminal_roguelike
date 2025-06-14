@@ -544,6 +544,10 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
             Style::default(),
             ' '
         ),
+        Tile::Door => (
+            Style::default().fg(Color::Yellow).bg(Color::Rgb(139, 69, 19)), // Brown door
+            '+'
+        ),
         Tile::Grass => (
             Style::default().fg(Color::Green),
             '"'
@@ -571,6 +575,10 @@ fn get_tile_style_and_char(tile: Tile) -> (Style, char) {
         Tile::DungeonEntrance => (
             Style::default().fg(Color::Red).bg(Color::Black),
             'D'
+        ),
+        Tile::DungeonExit => (
+            Style::default().fg(Color::Cyan).bg(Color::Black),
+            '<'
         ),
     }
 }

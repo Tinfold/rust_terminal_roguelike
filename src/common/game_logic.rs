@@ -16,6 +16,7 @@ pub struct Player {
     pub hp: i32,
     pub max_hp: i32,
     pub symbol: char,
+    pub dungeon_entrance_pos: Option<(i32, i32)>, // Position of the dungeon entrance they came from
 }
 
 pub struct GameLogic;
@@ -25,7 +26,7 @@ impl GameLogic {
     pub fn is_movement_valid(tile: Tile) -> bool {
         matches!(tile, 
             Tile::Floor | Tile::Grass | Tile::Road | 
-            Tile::Tree | Tile::Village | Tile::DungeonEntrance
+            Tile::Tree | Tile::Village | Tile::DungeonEntrance | Tile::Door | Tile::DungeonExit
         )
     }
 
@@ -45,6 +46,7 @@ impl GameLogic {
             Tile::Tree => Some("You push through the thick forest.".to_string()),
             Tile::Village => Some("You visit the village. The locals greet you warmly.".to_string()),
             Tile::DungeonEntrance => Some("You stand before a dark dungeon entrance. Press 'e' to enter.".to_string()),
+            Tile::DungeonExit => Some("You are at the dungeon entrance/exit. Press 'x' to exit to the overworld.".to_string()),
             _ => None,
         }
     }
@@ -88,6 +90,31 @@ impl GameLogic {
         TerrainGenerator::generate_dungeon(width, height)
     }
 
+    /// Generate a dungeon map based on entrance position for uniqueness
+    pub fn generate_dungeon_map_for_entrance(entrance_x: i32, entrance_y: i32) -> GameMap {
+        let width = GameConstants::DUNGEON_WIDTH;
+        let height = GameConstants::DUNGEON_HEIGHT;
+        
+        // Generate a unique seed based on entrance position
+        let seed = Self::generate_dungeon_seed(entrance_x, entrance_y);
+        
+        TerrainGenerator::generate_dungeon_with_seed(width, height, seed)
+    }
+
+    /// Generate a unique seed for a dungeon based on its entrance position
+    pub fn generate_dungeon_seed(entrance_x: i32, entrance_y: i32) -> u32 {
+        // Use entrance coordinates to create a deterministic but unique seed
+        let mut seed = 0x9e3779b9u32; // A good base seed (golden ratio * 2^32)
+        seed = seed.wrapping_add(entrance_x as u32).wrapping_mul(0x85ebca6b);
+        seed = seed.wrapping_add(entrance_y as u32).wrapping_mul(0xc2b2ae35);
+        seed = seed ^ (seed >> 16);
+        seed = seed.wrapping_mul(0x85ebca6b);
+        seed = seed ^ (seed >> 13);
+        seed = seed.wrapping_mul(0xc2b2ae35);
+        seed = seed ^ (seed >> 16);
+        seed
+    }
+
     /// Common logic for exiting to overworld - generates the overworld map
     pub fn generate_overworld_map() -> GameMap {
         // Use the sophisticated terrain generator from the terrain module
@@ -109,9 +136,45 @@ impl GameLogic {
         TerrainGenerator::generate_dungeon(width, height)
     }
 
-    /// Get default dungeon spawn position
+    /// Get default dungeon spawn position - now finds a safe floor tile
     pub fn get_dungeon_spawn_position() -> (i32, i32) {
         (GameConstants::DUNGEON_SPAWN_X, GameConstants::DUNGEON_SPAWN_Y)
+    }
+
+    /// Get a safe spawn position in a given dungeon map
+    pub fn get_safe_dungeon_spawn_position(dungeon_map: &GameMap) -> (i32, i32) {
+        // First, look for a DungeonExit tile - this is the intended spawn position
+        for y in 1..dungeon_map.height - 1 {
+            for x in 1..dungeon_map.width - 1 {
+                if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
+                    if *tile == Tile::DungeonExit {
+                        return (x, y);
+                    }
+                }
+            }
+        }
+        
+        // If no dungeon exit found, try the default spawn position
+        let default_pos = (GameConstants::DUNGEON_SPAWN_X, GameConstants::DUNGEON_SPAWN_Y);
+        if let Some(tile) = dungeon_map.tiles.get(&default_pos) {
+            if *tile == Tile::Floor {
+                return default_pos;
+            }
+        }
+
+        // If default position is not safe, find the first floor tile
+        for y in 1..dungeon_map.height - 1 {
+            for x in 1..dungeon_map.width - 1 {
+                if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
+                    if *tile == Tile::Floor {
+                        return (x, y);
+                    }
+                }
+            }
+        }
+
+        // Fallback to default position (should not happen with proper generation)
+        default_pos
     }
 
     /// Get default overworld spawn position
@@ -127,6 +190,11 @@ impl GameLogic {
     /// Check if current position has a dungeon entrance (network version)
     pub fn is_at_network_dungeon_entrance(game_map: &NetworkGameMap, x: i32, y: i32) -> bool {
         game_map.get_tile(x, y) == Some(&Tile::DungeonEntrance)
+    }
+
+    /// Check if current position has a dungeon exit
+    pub fn is_at_dungeon_exit(game_map: &GameMap, x: i32, y: i32) -> bool {
+        game_map.tiles.get(&(x, y)) == Some(&Tile::DungeonExit)
     }
 
     /// Limit messages to a maximum count

@@ -10,7 +10,7 @@ use rust_cli_roguelike::common::protocol::{
     ClientMessage, ServerMessage, GameState, NetworkPlayer, ChunkData,
     NetworkCurrentScreen, PlayerId, MapType
 };
-use rust_cli_roguelike::common::game_logic::{GameLogic, Tile, GameChunkManager};
+use rust_cli_roguelike::common::game_logic::{GameLogic, Tile, GameChunkManager, GameMap};
 use rust_cli_roguelike::common::chunk::CHUNK_SIZE;
 
 type SharedGameState = Arc<Mutex<ServerGameState>>;
@@ -37,6 +37,8 @@ struct ServerGameState {
     chunk_manager: GameChunkManager,
     turn_count: u32,
     client_senders: HashMap<PlayerId, ClientSender>,
+    // Store generated dungeons keyed by entrance coordinates
+    dungeons: HashMap<(i32, i32), GameMap>,
     // Note: current_map_type is now per-player, not global
 }
 
@@ -51,6 +53,7 @@ impl ServerGameState {
             chunk_manager,
             turn_count: 0,
             client_senders: HashMap::new(),
+            dungeons: HashMap::new(),
         }
     }
 
@@ -72,6 +75,7 @@ impl ServerGameState {
             current_screen: NetworkCurrentScreen::Game,
             color,
             current_map_type: MapType::Overworld, // New players start in overworld
+            dungeon_entrance_pos: None, // No dungeon entrance initially
         };
 
         self.players.insert(player_id.clone(), player.clone());
@@ -104,18 +108,20 @@ impl ServerGameState {
 
             // Validate movement based on player's current map type
             let (tile, is_valid) = if current_map_type == MapType::Dungeon {
-                // In dungeons, players need their own dungeon map for validation
-                // For now, we'll be permissive and allow movement within reasonable bounds
-                // This is a simplification - in a full implementation, server would maintain dungeon maps
-                let (_spawn_x, _spawn_y) = GameLogic::get_dungeon_spawn_position();
-                let dungeon_width = 40; // Approximate dungeon size
-                let dungeon_height = 30;
-                
-                if new_x >= 0 && new_x < dungeon_width && new_y >= 0 && new_y < dungeon_height {
-                    (Some(Tile::Floor), true) // Assume valid floor movement in dungeon
+                // In dungeons, use the stored dungeon map for proper validation
+                let tile = if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                    let entrance_key = (entrance_x, entrance_y);
+                    if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                        dungeon_map.tiles.get(&(new_x, new_y)).cloned()
+                    } else {
+                        None
+                    }
                 } else {
-                    (Some(Tile::Wall), false) // Hit dungeon boundary
-                }
+                    None
+                };
+                
+                let is_valid = tile.map_or(false, |t| GameLogic::is_movement_valid(t));
+                (tile, is_valid)
             } else {
                 // In overworld, use chunk manager
                 self.chunk_manager.update_player_position(new_x, new_y);
@@ -192,12 +198,33 @@ impl ServerGameState {
             return Err("You're not at a dungeon entrance.".to_string());
         }
 
+        // Get or generate the dungeon for this entrance
+        let entrance_key = (player_x, player_y);
+        let dungeon_map = if let Some(existing_dungeon) = self.dungeons.get(&entrance_key) {
+            // Use existing dungeon
+            existing_dungeon.clone()
+        } else {
+            // Generate new dungeon and store it
+            let new_dungeon = GameLogic::generate_dungeon_map_for_entrance(player_x, player_y);
+            self.dungeons.insert(entrance_key, new_dungeon.clone());
+            new_dungeon
+        };
+
         // Now move the player to the dungeon
         if let Some(player) = self.players.get_mut(player_id) {
-            let (spawn_x, spawn_y) = GameLogic::get_dungeon_spawn_position();
+            // Store the entrance position before moving to dungeon
+            player.dungeon_entrance_pos = Some((player_x, player_y));
+            
+            let (spawn_x, spawn_y) = GameLogic::get_safe_dungeon_spawn_position(&dungeon_map);
             player.x = spawn_x;
             player.y = spawn_y;
             player.current_map_type = MapType::Dungeon;
+
+            // Send the dungeon map to the player
+            let network_dungeon_map = GameLogic::game_map_to_network(&dungeon_map);
+            self.send_to_player(player_id, ServerMessage::DungeonData { 
+                dungeon_map: network_dungeon_map 
+            });
 
             self.broadcast_game_state();
             let msg = ServerMessage::Message {
@@ -212,9 +239,9 @@ impl ServerGameState {
 
     fn exit_dungeon(&mut self, player_id: &PlayerId) -> Result<(), String> {
         // First check if player exists and get their current state
-        let (player_name, is_in_dungeon) = {
+        let (player_name, is_in_dungeon, player_x, player_y) = {
             if let Some(player) = self.players.get(player_id) {
-                (player.name.clone(), player.current_map_type == MapType::Dungeon)
+                (player.name.clone(), player.current_map_type == MapType::Dungeon, player.x, player.y)
             } else {
                 return Err("Player not found.".to_string());
             }
@@ -224,12 +251,35 @@ impl ServerGameState {
             return Err("You're not in a dungeon.".to_string());
         }
 
+        // In multiplayer, we need to check if the player is at a dungeon exit position
+        // Use the stored dungeon map to check the tile at player's position
+        if let Some(player) = self.players.get(player_id) {
+            if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                let entrance_key = (entrance_x, entrance_y);
+                if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                    if !GameLogic::is_at_dungeon_exit(dungeon_map, player_x, player_y) {
+                        return Err("You must be at the dungeon entrance (marked with '<') to exit.".to_string());
+                    }
+                } else {
+                    // Fallback: generate dungeon if not found (shouldn't happen)
+                    let dungeon_map = GameLogic::generate_dungeon_map_for_entrance(entrance_x, entrance_y);
+                    if !GameLogic::is_at_dungeon_exit(&dungeon_map, player_x, player_y) {
+                        return Err("You must be at the dungeon entrance (marked with '<') to exit.".to_string());
+                    }
+                }
+            }
+        }
+
         // Now move the player to the overworld
         if let Some(player) = self.players.get_mut(player_id) {
-            let (spawn_x, spawn_y) = GameLogic::get_overworld_spawn_position();
+            // Use stored entrance position or fall back to default spawn
+            let (spawn_x, spawn_y) = player.dungeon_entrance_pos
+                .unwrap_or_else(|| GameLogic::get_overworld_spawn_position());
+            
             player.x = spawn_x;
             player.y = spawn_y;
             player.current_map_type = MapType::Overworld;
+            player.dungeon_entrance_pos = None; // Clear the stored entrance position
 
             self.broadcast_game_state();
             let msg = ServerMessage::Message {
@@ -320,6 +370,22 @@ impl ServerGameState {
         // Send chunk data to the requesting player
         self.send_to_player(player_id, ServerMessage::ChunkData { chunks: chunk_data });
     }
+
+    fn handle_dungeon_data_request(&mut self, player_id: &PlayerId) {
+        if let Some(player) = self.players.get(player_id) {
+            if player.current_map_type == MapType::Dungeon {
+                if let Some((entrance_x, entrance_y)) = player.dungeon_entrance_pos {
+                    let entrance_key = (entrance_x, entrance_y);
+                    if let Some(dungeon_map) = self.dungeons.get(&entrance_key) {
+                        let network_dungeon_map = GameLogic::game_map_to_network(dungeon_map);
+                        self.send_to_player(player_id, ServerMessage::DungeonData { 
+                            dungeon_map: network_dungeon_map 
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -391,6 +457,9 @@ async fn handle_client(stream: TcpStream, game_state: SharedGameState) {
                         }
                         ClientMessage::RequestChunks { chunks } => {
                             state.handle_chunk_request(&player_id, chunks);
+                        }
+                        ClientMessage::RequestDungeonData => {
+                            state.handle_dungeon_data_request(&player_id);
                         }
                         ClientMessage::EnterDungeon => {
                             match state.enter_dungeon(&player_id) {
