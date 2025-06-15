@@ -5,8 +5,8 @@ impl GameConstants {
     // Map dimensions
     pub const OVERWORLD_WIDTH: i32 = 60;
     pub const OVERWORLD_HEIGHT: i32 = 30;
-    pub const DUNGEON_WIDTH: i32 = 80;
-    pub const DUNGEON_HEIGHT: i32 = 40;
+    pub const DUNGEON_WIDTH: i32 = 80;  // Ensure at least 60
+    pub const DUNGEON_HEIGHT: i32 = 50; // Ensure at least 40
 
     // Spawn positions
     pub const OVERWORLD_SPAWN_X: i32 = 30;

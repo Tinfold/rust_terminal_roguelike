@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use rust_cli_roguelike::common::dungeon::DungeonGenerator;
 use rust_cli_roguelike::common::protocol::{GameState, NetworkPlayer, PlayerId, ClientMessage, ServerMessage};
 use rust_cli_roguelike::common::game_logic::{GameLogic, GameChunkManager};
 
@@ -521,6 +522,10 @@ impl App {
                     
                     // Generate a unique dungeon based on entrance position
                     self.game_map = GameLogic::generate_dungeon_map_for_entrance(entrance_pos.0, entrance_pos.1);
+                    if let Err(e) = DungeonGenerator::save_visualization(&self.game_map, "debug_dungeons/dungeon.png"){
+                        eprintln!("Failed to save dungeon visualization: {}", e);
+                    }
+                    // Disable chunk manager in dungeons            
                     self.chunk_manager = None; // Disable chunk manager in dungeons
                     let (spawn_x, spawn_y) = GameLogic::get_safe_dungeon_spawn_position(&self.game_map);
                     self.player.x = spawn_x;

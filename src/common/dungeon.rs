@@ -33,7 +33,11 @@ impl BSPNode {
 
     /// Check if this node can be split
     fn can_split(&self, min_size: i32) -> bool {
-        self.width > min_size * 2 || self.height > min_size * 2
+        println!("Checking if node {}x{} can split with min_size {}", self.width, self.height, min_size);
+        // Use AND instead of OR to ensure both dimensions are reasonable
+        let can_split = self.width > min_size * 2 && self.height > min_size * 2;
+        println!("  Result: {}", can_split);
+        can_split
     }
 
     /// Split this node into two child nodes
@@ -42,14 +46,14 @@ impl BSPNode {
             return false;
         }
 
-        // Determine split direction - prefer splitting the longer dimension
-        let split_horizontal = if self.width > self.height {
-            false // Split vertically (create left/right children)
-        } else if self.height > self.width {
-            true // Split horizontally (create top/bottom children)
+        // Add more randomness to split direction decision
+        let split_horizontal = if (self.width as f32) >= 1.25 * (self.height as f32) {
+            false // Split vertically if significantly wider
+        } else if (self.height as f32) >= 1.25 * (self.width as f32) {
+            true // Split horizontally if significantly taller
         } else {
-            // Equal dimensions - random choice
-            *next_id % 2 == 0
+            // Random choice with better distribution
+            (self.id + *next_id) % 2 == 0
         };
 
         let (max_split, min_split_size) = if split_horizontal {
@@ -62,8 +66,9 @@ impl BSPNode {
             return false;
         }
 
-        // Choose split position (avoid splitting too close to edges)
-        let split_pos = min_split_size + ((*next_id * 17) % (max_split - min_split_size) as u32) as i32;
+        // Better distribution for split position - avoid middle splits too often
+        let split_pos = min_split_size + 
+            ((self.id.wrapping_mul(17) + *next_id * 13) % (max_split - min_split_size) as u32) as i32;
 
         if split_horizontal {
             // Horizontal split - create top and bottom children
@@ -214,15 +219,38 @@ impl DungeonGenerator {
         let mut root = BSPNode::new(1, 1, width - 2, height - 2, 0);
         let mut next_id = 1;
         
-        // Split the space recursively
-        Self::split_node_recursive(&mut root, &mut next_id, 8, 6); // min_size=8, depth=6
+        println!("Starting BSP generation with root: {}x{} at ({}, {})", root.width, root.height, root.x, root.y);
         
-        // Create rooms in leaf nodes
-        root.create_rooms(4, 12); // min_room_size=4, max_room_size=12
+        // Split the space recursively with parameters tuned for dungeon size
+        let min_size = if width >= 80 && height >= 40 {
+            12  // Larger dungeons can have bigger minimum partition sizes
+        } else {
+            10  // Increased significantly to fix room creation
+        };
+        let max_depth = if width >= 80 && height >= 40 {
+            5  // More depth for larger dungeons
+        } else {
+            3  // Reduced to prevent over-splitting small spaces
+        };
+        
+        Self::split_node_recursive(&mut root, &mut next_id, min_size, max_depth);
+        
+        // Debug the BSP tree structure - Add this line!
+        println!("BSP tree structure:");
+        debug_bsp_tree(&root, 0);
+        
+        // Create rooms in leaf nodes - adjusted parameters
+        root.create_rooms(5, 8); // Adjusted room sizes for better fit
         
         // Get all rooms
         let mut rooms = Vec::new();
         root.get_rooms(&mut rooms);
+        
+        // Debug: Print room count
+        println!("BSP Dungeon Generator: Created {} rooms", rooms.len());
+        for (i, room) in rooms.iter().enumerate() {
+            println!("  Room {}: ({}, {}) {}x{}", i, room.x, room.y, room.width, room.height);
+        }
         
         // Carve out rooms
         for room in &rooms {
@@ -401,9 +429,16 @@ impl DungeonGenerator {
             for &room_id_1 in &connected_room_ids {
                 for &room_id_2 in &connected_room_ids {
                     if room_id_1 != room_id_2 {
+                        // Find both rooms and ensure bidirectional connection
                         if let Some(room_1) = rooms.iter_mut().find(|r| r.id == room_id_1) {
                             if !room_1.connected_rooms.contains(&room_id_2) {
                                 room_1.connected_rooms.push(room_id_2);
+                            }
+                        }
+                        
+                        if let Some(room_2) = rooms.iter_mut().find(|r| r.id == room_id_2) {
+                            if !room_2.connected_rooms.contains(&room_id_1) {
+                                room_2.connected_rooms.push(room_id_1);
                             }
                         }
                     }
@@ -414,9 +449,10 @@ impl DungeonGenerator {
     
     /// Generate a dungeon map based on entrance position for uniqueness
     pub fn generate_dungeon_for_entrance(entrance_x: i32, entrance_y: i32) -> GameMap {
+        use crate::common::constants::GameConstants;
         // Use entrance position as seed for consistent generation
         let seed = Self::generate_dungeon_seed(entrance_x, entrance_y);
-        Self::generate_dungeon_with_seed(50, 30, seed) // Standard dungeon size
+        Self::generate_dungeon_with_seed(GameConstants::DUNGEON_WIDTH, GameConstants::DUNGEON_HEIGHT, seed)
     }
     
     /// Generate a dungeon seed based on entrance position
@@ -463,6 +499,12 @@ impl DungeonGenerator {
         
         // Fallback to default position even if not ideal
         default_pos
+    }
+
+    /// Save dungeon visualization to a file
+    pub fn save_visualization(dungeon: &GameMap, filename: &str) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::visualization::DungeonVisualizer;
+        DungeonVisualizer::save_dungeon_bitmap(dungeon, filename)
     }
 }
 
@@ -615,5 +657,25 @@ impl TileVisibility {
     /// Check if tile should be rendered
     pub fn is_visible(&self) -> bool {
         !matches!(self, TileVisibility::Hidden)
+    }
+}
+
+/// Debug print BSP tree structure
+fn debug_bsp_tree(node: &BSPNode, depth: usize) {
+    let indent = "  ".repeat(depth);
+    println!("{}Node {} at ({}, {}) {}x{}", indent, node.id, node.x, node.y, node.width, node.height);
+    
+    if let Some(ref room) = node.room {
+        println!("{}  Room: ({}, {}) {}x{}", indent, room.x, room.y, room.width, room.height);
+    }
+    
+    if let Some(ref left) = node.left {
+        println!("{}  Left child:", indent);
+        debug_bsp_tree(left, depth + 1);
+    }
+    
+    if let Some(ref right) = node.right {
+        println!("{}  Right child:", indent);
+        debug_bsp_tree(right, depth + 1);
     }
 }

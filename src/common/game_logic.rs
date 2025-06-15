@@ -29,7 +29,7 @@ impl GameLogic {
     pub fn is_movement_valid(tile: Tile) -> bool {
         matches!(tile, 
             Tile::Floor | Tile::Grass | Tile::Road | 
-            Tile::Tree | Tile::Village | Tile::DungeonEntrance | Tile::Door | Tile::DungeonExit
+            Tile::Tree | Tile::Village | Tile::DungeonEntrance | Tile::Door | Tile::DungeonExit | Tile::Corridor
         )
     }
 
@@ -187,6 +187,12 @@ impl GameLogic {
     pub fn is_tile_visible(game_map: &GameMap, player: &Player, x: i32, y: i32) -> bool {
         // In overworld, all tiles are always visible
         if game_map.rooms.is_empty() {
+            return true;
+        }
+        
+        // If the position is directly visible through lighting, show it
+        // This overrides other visibility checks and ensures doors are visible when lit
+        if game_map.is_visible(x, y) {
             return true;
         }
         
@@ -453,6 +459,12 @@ impl GameLogic {
             return true;
         }
         
+        // If the position is directly visible through lighting, show it
+        // This ensures doors are visible when lit
+        if game_map.is_visible(x, y) {
+            return true;
+        }
+        
         // Check if position is in a room
         if let Some(&room_id) = game_map.room_positions.get(&(x, y)) {
             // Tile is visible if the room has been explored
@@ -560,6 +572,20 @@ impl GameLogic {
             }
         }
         
+        false
+    }
+
+    /// Handle player movement including automatic door opening
+    pub fn handle_player_movement(game_map: &GameMap, player: &mut Player, target_x: i32, target_y: i32) -> bool {
+        if let Some(&tile) = game_map.tiles.get(&(target_x, target_y)) {
+            if Self::is_movement_valid(tile) {
+                // Check if moving onto a door, and automatically open it
+                if tile == Tile::Door {
+                    Self::open_door(game_map, player, target_x, target_y);
+                }
+                return true;
+            }
+        }
         false
     }
 }
