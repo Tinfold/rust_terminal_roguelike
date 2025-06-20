@@ -7,6 +7,7 @@ use ratatui::{
 };
 
 use crate::app::{App, CurrentScreen, MapType, Tile, GameMode};
+use rust_cli_roguelike::common::game_logic::GameLogic;
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
     match app.current_screen {
@@ -313,12 +314,19 @@ fn render_game_map(frame: &mut Frame, app: &mut App, area: Rect) {
                     // Check tile visibility using the new lighting system (for dungeons)
                     if app.current_map_type == MapType::Dungeon {
                         const LIGHT_RADIUS: i32 = 6; // Player's light radius
-                        let visibility_state = app.game_map.get_tile_visibility_state(
-                            app.player.x, app.player.y, world_x, world_y, LIGHT_RADIUS
+                        let visibility_state = app.game_map.get_tile_visibility_state_with_doors(
+                            app.player.x, app.player.y, world_x, world_y, LIGHT_RADIUS, &app.player.opened_doors
                         );
                         
-                        if visibility_state.is_visible() {
-                            let brightness = visibility_state.get_brightness();
+                        // Also check game logic visibility for exploration-based visibility (doors, etc.)
+                        let game_logic_visible = GameLogic::is_tile_visible(&app.game_map, &app.player, world_x, world_y);
+                        
+                        if visibility_state.is_visible() || game_logic_visible {
+                            let brightness = if visibility_state.is_visible() {
+                                visibility_state.get_brightness()
+                            } else {
+                                0.3 // Dim lighting for exploration-visible tiles
+                            };
                             let (base_style, character) = get_tile_style_and_char(tile);
                             
                             // Apply brightness to the tile color

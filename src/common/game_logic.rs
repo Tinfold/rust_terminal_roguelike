@@ -89,23 +89,44 @@ impl GameLogic {
         }
     }
 
-    /// Common logic for entering a dungeon - generates the dungeon map
+    /// Common logic for entering a dungeon - generates the dungeon map with proper seeding
     pub fn generate_dungeon_map() -> GameMap {
-        // Use the sophisticated dungeon generator from the dungeon module
+        // Use a random seed for generic dungeon generation
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::Hasher;
+        
+        let mut hasher = DefaultHasher::new();
+        hasher.write_u64(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64);
+        let seed = hasher.finish() as u32;
+        
         let width = GameConstants::DUNGEON_WIDTH;
         let height = GameConstants::DUNGEON_HEIGHT;
         
-        DungeonGenerator::generate_dungeon(width, height)
+        DungeonGenerator::generate_dungeon_with_seed(width, height, seed)
     }
 
-    /// Generate a dungeon map based on entrance position for uniqueness
+    /// Generate a dungeon map based on entrance position for uniqueness - ensures consistent seeding
     pub fn generate_dungeon_map_for_entrance(entrance_x: i32, entrance_y: i32) -> GameMap {
+        let seed = DungeonGenerator::generate_dungeon_seed(entrance_x, entrance_y);
+        println!("Generating dungeon for entrance at ({}, {}) with seed: {}", entrance_x, entrance_y, seed);
         DungeonGenerator::generate_dungeon_for_entrance(entrance_x, entrance_y)
     }
 
     /// Generate a unique seed for a dungeon based on its entrance position
     pub fn generate_dungeon_seed(entrance_x: i32, entrance_y: i32) -> u32 {
         DungeonGenerator::generate_dungeon_seed(entrance_x, entrance_y)
+    }
+
+    /// Generate a dungeon map with a specific seed for consistency - now properly implemented
+    pub fn generate_dungeon_map_with_seed(seed: u32) -> GameMap {
+        let width = GameConstants::DUNGEON_WIDTH;
+        let height = GameConstants::DUNGEON_HEIGHT;
+        
+        println!("Generating dungeon with explicit seed: {}", seed);
+        DungeonGenerator::generate_dungeon_with_seed(width, height, seed)
     }
 
     /// Common logic for exiting to overworld - generates the overworld map
@@ -115,15 +136,6 @@ impl GameLogic {
         let height = GameConstants::OVERWORLD_HEIGHT;
         
         TerrainGenerator::generate_overworld(width, height)
-    }
-
-    /// Generate a dungeon map with a specific seed for consistency
-    pub fn generate_dungeon_map_with_seed(seed: u32) -> GameMap {
-        // Use the seed to ensure consistent dungeon generation
-        let width = GameConstants::DUNGEON_WIDTH;
-        let height = GameConstants::DUNGEON_HEIGHT;
-        
-        DungeonGenerator::generate_dungeon_with_seed(width, height, seed)
     }
 
     /// Get default dungeon spawn position - now finds a safe floor tile
@@ -204,7 +216,7 @@ impl GameLogic {
         
         // Check if position is a corridor (not in any room)
         if let Some(&tile) = game_map.tiles.get(&(x, y)) {
-            if tile == Tile::Floor {
+            if tile == Tile::Floor || tile == Tile::Corridor {
                 // For corridors, check if any adjacent explored room makes it visible
                 for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
                     let nx = x + dx;
@@ -223,7 +235,7 @@ impl GameLogic {
             }
         }
         
-        // Doors are visible if they connect to an explored room
+        // Doors are visible if they are in an explored room or connect to one
         if let Some(&tile) = game_map.tiles.get(&(x, y)) {
             if tile == Tile::Door {
                 // Check if door has been opened
@@ -231,7 +243,14 @@ impl GameLogic {
                     return true;
                 }
                 
-                // Check if door is adjacent to an explored room
+                // Check if door is inside an explored room (unlikely for doors, but check anyway)
+                if let Some(&room_id) = game_map.room_positions.get(&(x, y)) {
+                    if player.explored_rooms.contains(&room_id) {
+                        return true;
+                    }
+                }
+                
+                // Check if door is adjacent to an explored room (this is the main case)
                 for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
                     let nx = x + dx;
                     let ny = y + dy;
@@ -239,6 +258,27 @@ impl GameLogic {
                         if player.explored_rooms.contains(&room_id) {
                             return true;
                         }
+                    }
+                }
+                
+                // Check if door is in a corridor that should be visible
+                // Doors are often placed in corridor tiles, so apply corridor visibility rules
+                if game_map.room_positions.get(&(x, y)).is_none() {
+                    // This door is not in a room, treat it as a corridor for visibility
+                    // Check if any adjacent explored room makes this corridor visible
+                    for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        let nx = x + dx;
+                        let ny = y + dy;
+                        if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                            if player.explored_rooms.contains(&room_id) {
+                                return true;
+                            }
+                        }
+                    }
+                    
+                    // Also check if connected to the corridor network through opened doors
+                    if Self::is_corridor_connected_to_explored_area(game_map, player, x, y) {
+                        return true;
                     }
                 }
             }
@@ -304,7 +344,7 @@ impl GameLogic {
                 // Check if this position has a walkable tile
                 if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
                     match tile {
-                        Tile::Floor => {
+                        Tile::Floor | Tile::Corridor => {
                             // If it's a corridor (not in a room), continue exploring
                             if game_map.room_positions.get(&(nx, ny)).is_none() {
                                 stack.push((nx, ny));
@@ -340,7 +380,7 @@ impl GameLogic {
             
             // Check if adjacent to a corridor that should be visible
             if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
-                if tile == Tile::Floor && game_map.room_positions.get(&(nx, ny)).is_none() {
+                if (tile == Tile::Floor || tile == Tile::Corridor) && game_map.room_positions.get(&(nx, ny)).is_none() {
                     // This is a corridor - check if it should be visible based on current visibility rules
                     if Self::is_corridor_visible(game_map, player, nx, ny) {
                         return true;
@@ -414,7 +454,7 @@ impl GameLogic {
                 // Check if there's a walkable path
                 if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
                     match tile {
-                        Tile::Floor => {
+                        Tile::Floor | Tile::Corridor => {
                             // If it's a corridor, continue searching
                             if game_map.room_positions.get(&(nx, ny)).is_none() {
                                 queue.push_back((nx, ny));
@@ -473,7 +513,7 @@ impl GameLogic {
         
         // Check if position is a corridor (not in any room)
         if let Some(&tile) = game_map.tiles.get(&(x, y)) {
-            if tile == Tile::Floor {
+            if tile == Tile::Floor || tile == Tile::Corridor {
                 // For corridors, check if any adjacent explored room makes it visible
                 for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
                     let nx = x + dx;
@@ -492,12 +532,19 @@ impl GameLogic {
             }
         }
         
-        // Doors are visible if they connect to an explored room
+        // Doors are visible if they are in an explored room or connect to one
         if let Some(&tile) = game_map.tiles.get(&(x, y)) {
             if tile == Tile::Door {
                 // Check if door has been opened
                 if player.opened_doors.contains(&(x, y)) {
                     return true;
+                }
+                
+                // Check if door is inside an explored room
+                if let Some(&room_id) = game_map.room_positions.get(&(x, y)) {
+                    if player.explored_rooms.contains(&room_id) {
+                        return true;
+                    }
                 }
                 
                 // Check if door is adjacent to an explored room
@@ -508,6 +555,27 @@ impl GameLogic {
                         if player.explored_rooms.contains(&room_id) {
                             return true;
                         }
+                    }
+                }
+                
+                // Check if door is in a corridor that should be visible
+                // Doors are often placed in corridor tiles, so apply corridor visibility rules
+                if game_map.room_positions.get(&(x, y)).is_none() {
+                    // This door is not in a room, treat it as a corridor for visibility
+                    // Check if any adjacent explored room makes this corridor visible
+                    for (dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        let nx = x + dx;
+                        let ny = y + dy;
+                        if let Some(&room_id) = game_map.room_positions.get(&(nx, ny)) {
+                            if player.explored_rooms.contains(&room_id) {
+                                return true;
+                            }
+                        }
+                    }
+                    
+                    // Also check if connected to the corridor network through opened doors
+                    if Self::is_corridor_connected_to_explored_area_network_player(game_map, player, x, y) {
+                        return true;
                     }
                 }
             }
@@ -554,7 +622,7 @@ impl GameLogic {
                 // Check if there's a walkable path
                 if let Some(&tile) = game_map.tiles.get(&(nx, ny)) {
                     match tile {
-                        Tile::Floor => {
+                        Tile::Floor | Tile::Corridor => {
                             // If it's a corridor, continue searching
                             if game_map.room_positions.get(&(nx, ny)).is_none() {
                                 queue.push_back((nx, ny));

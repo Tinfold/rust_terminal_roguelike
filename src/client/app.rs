@@ -421,7 +421,7 @@ impl App {
                         // Update lighting if in dungeon (player has a light source)
                         if self.current_map_type == MapType::Dungeon {
                             const LIGHT_RADIUS: i32 = 6; // Player's light radius
-                            self.game_map.update_lighting(new_x, new_y, LIGHT_RADIUS);
+                            self.game_map.update_lighting_with_doors(new_x, new_y, LIGHT_RADIUS, &self.player.opened_doors);
                         }
                         
                         // Send move to server

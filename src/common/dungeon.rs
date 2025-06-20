@@ -4,6 +4,36 @@ use std::collections::HashSet;
 /// BSP-based dungeon generator with player lighting system
 pub struct DungeonGenerator;
 
+/// Random number generator using Linear Congruential Generator for deterministic results
+struct SeededRng {
+    state: u32,
+}
+
+impl SeededRng {
+    fn new(seed: u32) -> Self {
+        Self { state: seed }
+    }
+    
+    fn next(&mut self) -> u32 {
+        // Linear Congruential Generator constants (same as used by Numerical Recipes)
+        self.state = self.state.wrapping_mul(1664525).wrapping_add(1013904223);
+        self.state
+    }
+    
+    fn next_range(&mut self, min: i32, max: i32) -> i32 {
+        if min >= max {
+            return min;
+        }
+        let range = (max - min) as u32;
+        let rand_val = self.next();
+        min + (rand_val % range) as i32
+    }
+    
+    fn next_bool(&mut self) -> bool {
+        self.next() % 2 == 0
+    }
+}
+
 /// BSP Node for recursive dungeon generation
 #[derive(Debug, Clone)]
 struct BSPNode {
@@ -33,27 +63,22 @@ impl BSPNode {
 
     /// Check if this node can be split
     fn can_split(&self, min_size: i32) -> bool {
-        println!("Checking if node {}x{} can split with min_size {}", self.width, self.height, min_size);
-        // Use AND instead of OR to ensure both dimensions are reasonable
-        let can_split = self.width > min_size * 2 && self.height > min_size * 2;
-        println!("  Result: {}", can_split);
-        can_split
+        self.width > min_size * 2 && self.height > min_size * 2
     }
 
-    /// Split this node into two child nodes
-    fn split(&mut self, next_id: &mut u32, min_size: i32) -> bool {
+    /// Split this node into two child nodes using seeded randomization
+    fn split(&mut self, next_id: &mut u32, min_size: i32, rng: &mut SeededRng) -> bool {
         if !self.can_split(min_size) {
             return false;
         }
 
-        // Add more randomness to split direction decision
+        // Use seeded RNG for split direction decision
         let split_horizontal = if (self.width as f32) >= 1.25 * (self.height as f32) {
             false // Split vertically if significantly wider
         } else if (self.height as f32) >= 1.25 * (self.width as f32) {
             true // Split horizontally if significantly taller
         } else {
-            // Random choice with better distribution
-            (self.id + *next_id) % 2 == 0
+            rng.next_bool() // Random choice using seeded RNG
         };
 
         let (max_split, min_split_size) = if split_horizontal {
@@ -66,9 +91,8 @@ impl BSPNode {
             return false;
         }
 
-        // Better distribution for split position - avoid middle splits too often
-        let split_pos = min_split_size + 
-            ((self.id.wrapping_mul(17) + *next_id * 13) % (max_split - min_split_size) as u32) as i32;
+        // Use seeded RNG for split position
+        let split_pos = rng.next_range(min_split_size, max_split);
 
         if split_horizontal {
             // Horizontal split - create top and bottom children
@@ -113,12 +137,12 @@ impl BSPNode {
         true
     }
 
-    /// Create rooms in leaf nodes
-    fn create_rooms(&mut self, min_room_size: i32, max_room_size: i32) {
+    /// Create rooms in leaf nodes using seeded randomization
+    fn create_rooms(&mut self, min_room_size: i32, max_room_size: i32, rng: &mut SeededRng) {
         if let (Some(ref mut left), Some(ref mut right)) = (&mut self.left, &mut self.right) {
             // This is an internal node - recurse to children
-            left.create_rooms(min_room_size, max_room_size);
-            right.create_rooms(min_room_size, max_room_size);
+            left.create_rooms(min_room_size, max_room_size, rng);
+            right.create_rooms(min_room_size, max_room_size, rng);
         } else {
             // This is a leaf node - create a room
             let margin = 2; // Leave some space from the edges
@@ -126,11 +150,23 @@ impl BSPNode {
             let max_height = (self.height - margin * 2).min(max_room_size);
             
             if max_width >= min_room_size && max_height >= min_room_size {
-                let room_width = min_room_size + (self.id * 13) as i32 % (max_width - min_room_size + 1);
-                let room_height = min_room_size + (self.id * 19) as i32 % (max_height - min_room_size + 1);
+                let room_width = rng.next_range(min_room_size, max_width + 1);
+                let room_height = rng.next_range(min_room_size, max_height + 1);
                 
-                let room_x = self.x + margin + (self.id * 23) as i32 % (self.width - room_width - margin * 2 + 1);
-                let room_y = self.y + margin + (self.id * 29) as i32 % (self.height - room_height - margin * 2 + 1);
+                let max_room_x = self.width - room_width - margin * 2;
+                let max_room_y = self.height - room_height - margin * 2;
+                
+                let room_x = if max_room_x > 0 {
+                    self.x + margin + rng.next_range(0, max_room_x + 1)
+                } else {
+                    self.x + margin
+                };
+                
+                let room_y = if max_room_y > 0 {
+                    self.y + margin + rng.next_range(0, max_room_y + 1)
+                } else {
+                    self.y + margin
+                };
                 
                 self.room = Some(Room {
                     x: room_x,
@@ -187,25 +223,26 @@ impl BSPNode {
         }
     }
 
-    /// Connect this node's children with corridors
-    fn connect_children(&self, game_map: &mut GameMap) {
+    /// Connect this node's children with corridors using seeded randomization
+    fn connect_children(&self, game_map: &mut GameMap, rng: &mut SeededRng) {
         if let (Some(ref left), Some(ref right)) = (&self.left, &self.right) {
             // First, recursively connect children
-            left.connect_children(game_map);
-            right.connect_children(game_map);
+            left.connect_children(game_map, rng);
+            right.connect_children(game_map, rng);
             
             // Then connect the two subtrees
             let left_center = left.get_connection_center();
             let right_center = right.get_connection_center();
             
-            DungeonGenerator::carve_l_shaped_corridor(game_map, left_center, right_center);
+            DungeonGenerator::carve_l_shaped_corridor(game_map, left_center, right_center, rng);
         }
     }
 }
 
 impl DungeonGenerator {
-    /// Generate a BSP-based dungeon with rooms and corridors
-    pub fn generate_dungeon(width: i32, height: i32) -> GameMap {
+    /// Generate a BSP-based dungeon with rooms and corridors using a seed
+    pub fn generate_dungeon_with_seed(width: i32, height: i32, seed: u32) -> GameMap {
+        let mut rng = SeededRng::new(seed);
         let mut game_map = GameMap::new(width, height);
         
         // Fill with walls initially
@@ -219,7 +256,7 @@ impl DungeonGenerator {
         let mut root = BSPNode::new(1, 1, width - 2, height - 2, 0);
         let mut next_id = 1;
         
-        println!("Starting BSP generation with root: {}x{} at ({}, {})", root.width, root.height, root.x, root.y);
+        println!("Starting BSP generation with seed {} root: {}x{} at ({}, {})", seed, root.width, root.height, root.x, root.y);
         
         // Split the space recursively with parameters tuned for dungeon size
         let min_size = if width >= 80 && height >= 40 {
@@ -233,21 +270,21 @@ impl DungeonGenerator {
             3  // Reduced to prevent over-splitting small spaces
         };
         
-        Self::split_node_recursive(&mut root, &mut next_id, min_size, max_depth);
+        Self::split_node_recursive(&mut root, &mut next_id, min_size, max_depth, &mut rng);
         
-        // Debug the BSP tree structure - Add this line!
+        // Debug the BSP tree structure
         println!("BSP tree structure:");
         debug_bsp_tree(&root, 0);
         
         // Create rooms in leaf nodes - adjusted parameters
-        root.create_rooms(5, 8); // Adjusted room sizes for better fit
+        root.create_rooms(5, 8, &mut rng);
         
         // Get all rooms
         let mut rooms = Vec::new();
         root.get_rooms(&mut rooms);
         
         // Debug: Print room count
-        println!("BSP Dungeon Generator: Created {} rooms", rooms.len());
+        println!("BSP Dungeon Generator: Created {} rooms with seed {}", rooms.len(), seed);
         for (i, room) in rooms.iter().enumerate() {
             println!("  Room {}: ({}, {}) {}x{}", i, room.x, room.y, room.width, room.height);
         }
@@ -258,7 +295,7 @@ impl DungeonGenerator {
         }
         
         // Connect rooms with corridors using BSP structure
-        root.connect_children(&mut game_map);
+        root.connect_children(&mut game_map, &mut rng);
         
         // Add doors at corridor-room intersections
         Self::add_doors(&mut game_map, &rooms);
@@ -276,18 +313,25 @@ impl DungeonGenerator {
         game_map
     }
 
-    /// Recursively split BSP nodes
-    fn split_node_recursive(node: &mut BSPNode, next_id: &mut u32, min_size: i32, max_depth: i32) {
+    /// Generate a BSP-based dungeon with default random seed
+    pub fn generate_dungeon(width: i32, height: i32) -> GameMap {
+        // Use a default seed based on current implementation
+        let seed = 12345;
+        Self::generate_dungeon_with_seed(width, height, seed)
+    }
+
+    /// Recursively split BSP nodes with seeded randomization
+    fn split_node_recursive(node: &mut BSPNode, next_id: &mut u32, min_size: i32, max_depth: i32, rng: &mut SeededRng) {
         if max_depth <= 0 || !node.can_split(min_size) {
             return;
         }
         
-        if node.split(next_id, min_size) {
+        if node.split(next_id, min_size, rng) {
             if let Some(ref mut left) = node.left {
-                Self::split_node_recursive(left, next_id, min_size, max_depth - 1);
+                Self::split_node_recursive(left, next_id, min_size, max_depth - 1, rng);
             }
             if let Some(ref mut right) = node.right {
-                Self::split_node_recursive(right, next_id, min_size, max_depth - 1);
+                Self::split_node_recursive(right, next_id, min_size, max_depth - 1, rng);
             }
         }
     }
@@ -304,13 +348,13 @@ impl DungeonGenerator {
         }
     }
     
-    /// Carve an L-shaped corridor between two points
-    fn carve_l_shaped_corridor(game_map: &mut GameMap, from: (i32, i32), to: (i32, i32)) {
+    /// Carve an L-shaped corridor between two points using seeded randomization
+    fn carve_l_shaped_corridor(game_map: &mut GameMap, from: (i32, i32), to: (i32, i32), rng: &mut SeededRng) {
         let (x1, y1) = from;
         let (x2, y2) = to;
         
-        // Choose corner point - sometimes go horizontal first, sometimes vertical first
-        let corner_horizontal_first = (x1 + y1 + x2 + y2) % 2 == 0;
+        // Use seeded RNG to choose corner point
+        let corner_horizontal_first = rng.next_bool();
         
         if corner_horizontal_first {
             // Go horizontal first, then vertical
@@ -321,6 +365,33 @@ impl DungeonGenerator {
             Self::carve_corridor_line(game_map, x1, y1, x1, y2);
             Self::carve_corridor_line(game_map, x1, y2, x2, y2);
         }
+        
+        // Ensure corridor endpoints connect to rooms by extending into room areas
+        Self::ensure_room_connection(game_map, (x1, y1));
+        Self::ensure_room_connection(game_map, (x2, y2));
+    }
+    
+    /// Ensure a corridor endpoint properly connects to adjacent rooms
+    fn ensure_room_connection(game_map: &mut GameMap, point: (i32, i32)) {
+        let (x, y) = point;
+        
+        // Check all adjacent positions for room floors
+        for &(dx, dy) in &[(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let adj_x = x + dx;
+            let adj_y = y + dy;
+            
+            if let Some(&tile) = game_map.tiles.get(&(adj_x, adj_y)) {
+                if tile == Tile::Floor {
+                    // Found adjacent room floor - ensure corridor reaches it
+                    if let Some(&current_tile) = game_map.tiles.get(&(x, y)) {
+                        if current_tile == Tile::Wall {
+                            game_map.tiles.insert((x, y), Tile::Corridor);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
     }
     
     /// Carve a straight corridor line between two points
@@ -329,7 +400,7 @@ impl DungeonGenerator {
         let mut y = y1;
         
         while x != x2 || y != y2 {
-            // Only carve if it's not already a room floor
+            // Only carve if it's not already a room floor and within bounds
             if x > 0 && y > 0 && x < game_map.width - 1 && y < game_map.height - 1 {
                 if let Some(&tile) = game_map.tiles.get(&(x, y)) {
                     if tile == Tile::Wall {
@@ -349,40 +420,49 @@ impl DungeonGenerator {
                 y -= 1;
             }
         }
+        
+        // Ensure the final point is also carved if it's a wall
+        if x2 > 0 && y2 > 0 && x2 < game_map.width - 1 && y2 < game_map.height - 1 {
+            if let Some(&tile) = game_map.tiles.get(&(x2, y2)) {
+                if tile == Tile::Wall {
+                    game_map.tiles.insert((x2, y2), Tile::Corridor);
+                }
+            }
+        }
     }
     
-    /// Add doors at room-corridor intersections
+    /// Add doors at room-corridor intersections - improved door placement
     fn add_doors(game_map: &mut GameMap, rooms: &[Room]) {
         let mut door_positions = HashSet::new();
         
         // Find all positions where corridors meet rooms
         for room in rooms {
-            // Check the perimeter of each room
+            // Check positions just outside the room perimeter
             for x in (room.x - 1)..=(room.x + room.width) {
                 for y in (room.y - 1)..=(room.y + room.height) {
-                    // Check if this position is on the room's border
-                    let on_border = (x == room.x - 1 || x == room.x + room.width ||
-                                     y == room.y - 1 || y == room.y + room.height) &&
-                                    x >= room.x - 1 && x <= room.x + room.width &&
-                                    y >= room.y - 1 && y <= room.y + room.height;
+                    // Check if this position is just outside the room
+                    let outside_room = (x == room.x - 1 || x == room.x + room.width ||
+                                       y == room.y - 1 || y == room.y + room.height) &&
+                                      !(x < room.x - 1 || x > room.x + room.width ||
+                                        y < room.y - 1 || y > room.y + room.height);
                     
-                    if on_border {
-                        // Check if there's a corridor adjacent to the room
+                    if outside_room {
+                        // Check if there's a corridor at this position
                         if let Some(&tile) = game_map.tiles.get(&(x, y)) {
                             if tile == Tile::Corridor {
-                                // Check if there's a room floor adjacent
+                                // Check if there's a room floor adjacent (inside the room)
                                 let adjacent_positions = [
                                     (x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)
                                 ];
                                 
                                 for &(ax, ay) in &adjacent_positions {
-                                    if let Some(&adj_tile) = game_map.tiles.get(&(ax, ay)) {
-                                        if adj_tile == Tile::Floor {
-                                            if let Some(&room_id) = game_map.room_positions.get(&(ax, ay)) {
-                                                if room_id == room.id {
-                                                    // This corridor connects to this room - place a door
-                                                    door_positions.insert((x, y));
-                                                }
+                                    // Check if adjacent position is inside this room
+                                    if ax >= room.x && ax < room.x + room.width &&
+                                       ay >= room.y && ay < room.y + room.height {
+                                        if let Some(&adj_tile) = game_map.tiles.get(&(ax, ay)) {
+                                            if adj_tile == Tile::Floor {
+                                                door_positions.insert((x, y));
+                                                break;
                                             }
                                         }
                                     }
@@ -398,6 +478,8 @@ impl DungeonGenerator {
         for &(x, y) in &door_positions {
             game_map.tiles.insert((x, y), Tile::Door);
         }
+        
+        println!("Added {} doors to the dungeon", door_positions.len());
     }
     
     /// Update room connections based on door placement
@@ -447,7 +529,7 @@ impl DungeonGenerator {
         }
     }
     
-    /// Generate a dungeon map based on entrance position for uniqueness
+    /// Generate a dungeon map based on entrance position for uniqueness - now properly seeded
     pub fn generate_dungeon_for_entrance(entrance_x: i32, entrance_y: i32) -> GameMap {
         use crate::common::constants::GameConstants;
         // Use entrance position as seed for consistent generation
@@ -455,18 +537,27 @@ impl DungeonGenerator {
         Self::generate_dungeon_with_seed(GameConstants::DUNGEON_WIDTH, GameConstants::DUNGEON_HEIGHT, seed)
     }
     
-    /// Generate a dungeon seed based on entrance position
+    /// Generate a dungeon seed based on entrance position - improved algorithm
     pub fn generate_dungeon_seed(entrance_x: i32, entrance_y: i32) -> u32 {
-        // Create a deterministic seed from entrance coordinates using wrapping arithmetic
-        let x_part = (entrance_x as u32).wrapping_mul(31);
-        let y_part = (entrance_y as u32).wrapping_mul(17);
-        x_part.wrapping_add(y_part) ^ 0x12345678
-    }
-    
-    /// Generate a dungeon map with a specific seed for consistency
-    pub fn generate_dungeon_with_seed(width: i32, height: i32, _seed: u32) -> GameMap {
-        // For now, just use the basic generation (can be enhanced later with seed-based randomization)
-        Self::generate_dungeon(width, height)
+        // Create a deterministic seed from entrance coordinates using a better hash function
+        let x_part = (entrance_x as u32).wrapping_mul(73856093);
+        let y_part = (entrance_y as u32).wrapping_mul(19349663);
+        let combined = x_part.wrapping_add(y_part);
+        
+        // Apply additional mixing to ensure good distribution
+        let mut seed = combined ^ 0x9E3779B9; // Golden ratio constant
+        seed ^= seed >> 16;
+        seed = seed.wrapping_mul(0x85EBCA6B);
+        seed ^= seed >> 13;
+        seed = seed.wrapping_mul(0xC2B2AE35);
+        seed ^= seed >> 16;
+        
+        // Ensure seed is never 0 (which could cause issues with some RNG implementations)
+        if seed == 0 {
+            seed = 1;
+        }
+        
+        seed
     }
     
     /// Get default dungeon spawn position
@@ -486,7 +577,31 @@ impl DungeonGenerator {
             }
         }
         
-        // Find any floor tile
+        // If default position isn't valid, find the first room's center
+        if let Some(first_room) = dungeon_map.rooms.first() {
+            let center_x = first_room.x + first_room.width / 2;
+            let center_y = first_room.y + first_room.height / 2;
+            
+            // Verify the center is actually a floor tile
+            if let Some(tile) = dungeon_map.tiles.get(&(center_x, center_y)) {
+                if *tile == Tile::Floor || *tile == Tile::DungeonExit {
+                    return (center_x, center_y);
+                }
+            }
+            
+            // If center isn't good, find any floor in the first room
+            for x in first_room.x..(first_room.x + first_room.width) {
+                for y in first_room.y..(first_room.y + first_room.height) {
+                    if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
+                        if *tile == Tile::Floor || *tile == Tile::DungeonExit {
+                            return (x, y);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Find any floor tile as last resort
         for x in 1..dungeon_map.width {
             for y in 1..dungeon_map.height {
                 if let Some(tile) = dungeon_map.tiles.get(&(x, y)) {
